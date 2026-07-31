@@ -1,0 +1,102 @@
+{
+  "verified": true,
+  "runs": 12,
+  "cases": [
+    {
+      "case": "combined",
+      "runs": 2,
+      "elapsed_ms": [
+        2180.883,
+        1925.038
+      ],
+      "repairs": [
+        1313,
+        897
+      ],
+      "forward_drops": [
+        554,
+        478
+      ]
+    },
+    {
+      "case": "duplicate",
+      "runs": 2,
+      "elapsed_ms": [
+        1648.658,
+        1636.698
+      ],
+      "repairs": [
+        36,
+        36
+      ],
+      "forward_drops": [
+        38,
+        38
+      ]
+    },
+    {
+      "case": "jitter",
+      "runs": 2,
+      "elapsed_ms": [
+        1704.238,
+        1702.886
+      ],
+      "repairs": [
+        41,
+        41
+      ],
+      "forward_drops": [
+        41,
+        41
+      ]
+    },
+    {
+      "case": "loss3",
+      "runs": 2,
+      "elapsed_ms": [
+        1928.731,
+        2086.364
+      ],
+      "repairs": [
+        834,
+        844
+      ],
+      "forward_drops": [
+        475,
+        475
+      ]
+    },
+    {
+      "case": "oversubscribed",
+      "runs": 2,
+      "elapsed_ms": [
+        1892.370,
+        2131.830
+      ],
+      "repairs": [
+        4980,
+        5756
+      ],
+      "forward_drops": [
+        5994,
+        5499
+      ]
+    },
+    {
+      "case": "reorder",
+      "runs": 2,
+      "elapsed_ms": [
+        1763.533,
+        1756.028
+      ],
+      "repairs": [
+        41,
+        42
+      ],
+      "forward_drops": [
+        40,
+        40
+      ]
+    }
+  ]
+}

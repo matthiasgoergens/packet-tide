@@ -1,0 +1,230 @@
+{
+  "after": "results/raw/stress/f6bc9a7",
+  "before": "results/raw/stress/aae99cf",
+  "cases": {
+    "combined": {
+      "blocks": 2,
+      "elapsed_ms": {
+        "after": [
+          2180.883,
+          1925.038
+        ],
+        "before": [
+          2859.499,
+          2901.588
+        ],
+        "relative_change": -0.28730099024715294
+      },
+      "paired_elapsed_ratio_median": 0.7130615102790525,
+      "repairs": {
+        "after": [
+          1313,
+          897
+        ],
+        "before": [
+          12785,
+          12793
+        ],
+        "relative_change": -0.9135976229572289
+      },
+      "udp_ip_bytes_offered": {
+        "after": [
+          19057262,
+          18546414
+        ],
+        "before": [
+          33130120,
+          33139944
+        ],
+        "relative_change": -0.43256919142254036
+      }
+    },
+    "duplicate": {
+      "blocks": 2,
+      "elapsed_ms": {
+        "after": [
+          1648.658,
+          1636.698
+        ],
+        "before": [
+          1635.401,
+          1635.441
+        ],
+        "relative_change": 0.004437389516216195
+      },
+      "paired_elapsed_ratio_median": 1.004437434383371,
+      "repairs": {
+        "after": [
+          36,
+          36
+        ],
+        "before": [
+          36,
+          36
+        ],
+        "relative_change": 0.0
+      },
+      "udp_ip_bytes_offered": {
+        "after": [
+          17489106,
+          17489106
+        ],
+        "before": [
+          17474348,
+          17474348
+        ],
+        "relative_change": 0.0008445522545390549
+      }
+    },
+    "jitter": {
+      "blocks": 2,
+      "elapsed_ms": {
+        "after": [
+          1704.238,
+          1702.886
+        ],
+        "before": [
+          1706.343,
+          1708.258
+        ],
+        "relative_change": -0.00218971411301061
+      },
+      "paired_elapsed_ratio_median": 0.997810821782765,
+      "repairs": {
+        "after": [
+          41,
+          41
+        ],
+        "before": [
+          41,
+          41
+        ],
+        "relative_change": 0.0
+      },
+      "udp_ip_bytes_offered": {
+        "after": [
+          17495246,
+          17495246
+        ],
+        "before": [
+          17480488,
+          17480488
+        ],
+        "relative_change": 0.0008442556065939577
+      }
+    },
+    "loss3": {
+      "blocks": 2,
+      "elapsed_ms": {
+        "after": [
+          1928.731,
+          2086.364
+        ],
+        "before": [
+          1816.357,
+          1928.865
+        ],
+        "relative_change": 0.07205794476268701
+      },
+      "paired_elapsed_ratio_median": 1.071760756124351,
+      "repairs": {
+        "after": [
+          834,
+          844
+        ],
+        "before": [
+          826,
+          825
+        ],
+        "relative_change": 0.01635372501514243
+      },
+      "udp_ip_bytes_offered": {
+        "after": [
+          18469050,
+          18481330
+        ],
+        "before": [
+          18444468,
+          18443240
+        ],
+        "relative_change": 0.0016989941473186665
+      }
+    },
+    "oversubscribed": {
+      "blocks": 2,
+      "elapsed_ms": {
+        "after": [
+          1892.37,
+          2131.83
+        ],
+        "before": [
+          3117.568,
+          3004.21
+        ],
+        "relative_change": -0.3426419579409773
+      },
+      "paired_elapsed_ratio_median": 0.6583080856013588,
+      "repairs": {
+        "after": [
+          4980,
+          5756
+        ],
+        "before": [
+          8660,
+          8789
+        ],
+        "relative_change": -0.38472118746059947
+      },
+      "udp_ip_bytes_offered": {
+        "after": [
+          23560268,
+          24513266
+        ],
+        "before": [
+          28064620,
+          28223032
+        ],
+        "relative_change": -0.14593108271775135
+      }
+    },
+    "reorder": {
+      "blocks": 2,
+      "elapsed_ms": {
+        "after": [
+          1763.533,
+          1756.028
+        ],
+        "before": [
+          2696.119,
+          2695.345
+        ],
+        "relative_change": -0.34719753298918443
+      },
+      "paired_elapsed_ratio_median": 0.6528022806267015,
+      "repairs": {
+        "after": [
+          41,
+          42
+        ],
+        "before": [
+          11957,
+          12467
+        ],
+        "relative_change": -0.9966017032427121
+      },
+      "udp_ip_bytes_offered": {
+        "after": [
+          17495246,
+          17496474
+        ],
+        "before": [
+          32113336,
+          32739616
+        ],
+        "relative_change": -0.4604452238349921
+      }
+    }
+  },
+  "paired_blocks": 12,
+  "verified": true
+}
