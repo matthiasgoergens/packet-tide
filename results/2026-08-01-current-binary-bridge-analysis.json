@@ -1,0 +1,66 @@
+{
+  "analysis": "2026-07-31-confirmatory-plan",
+  "bootstrap": {
+    "confidence": "one-sided 95%",
+    "replicates": 10000,
+    "seed": 0,
+    "stratification": "session"
+  },
+  "conditions": {
+    "clean_guardrail": {
+      "accepted_complete_blocks": 12,
+      "decision": "pass",
+      "estimand": "geometric_mean(udp_time / best_tcp_time)",
+      "estimate": 1.0027760303053284,
+      "minimum_blocks_required": 10,
+      "one_sided_95pct": {
+        "lower": 1.0010015819405627,
+        "upper": 1.004769941360954
+      },
+      "sessions": {
+        "/Users/matthias/Documents/tsunami-udp/results/raw/confirmatory/current-bridge-f6bc9a7": 12
+      },
+      "threshold": 1.05
+    },
+    "primary_advantage": {
+      "accepted_complete_blocks": 12,
+      "decision": "pass",
+      "estimand": "geometric_mean(best_tcp_time / udp_time)",
+      "estimate": 1.405026021295653,
+      "minimum_blocks_required": 10,
+      "one_sided_95pct": {
+        "lower": 1.3752886745574977,
+        "upper": 1.4325091634144431
+      },
+      "sessions": {
+        "/Users/matthias/Documents/tsunami-udp/results/raw/confirmatory/current-bridge-f6bc9a7": 12
+      },
+      "threshold": 1.25
+    },
+    "repair_guardrail": {
+      "accepted_complete_blocks": 11,
+      "decision": "pass",
+      "estimand": "mean(udp_ip_bytes_offered / source_bytes - 1)",
+      "estimate": 0.05028372461145574,
+      "minimum_blocks_required": 10,
+      "one_sided_95pct": {
+        "lower": 0.049917752092534844,
+        "upper": 0.0506563511761752
+      },
+      "sessions": {
+        "/Users/matthias/Documents/tsunami-udp/results/raw/confirmatory/current-bridge-f6bc9a7": 11
+      },
+      "threshold": 0.1
+    }
+  },
+  "correctness": {
+    "decision": "pass",
+    "udp_accepted_block_failures": []
+  },
+  "quality": {
+    "accepted_status_blocks": 35,
+    "excluded_accepted_blocks": [],
+    "quarantined_blocks": 1
+  },
+  "v0_1_performance_goal": "pass"
+}

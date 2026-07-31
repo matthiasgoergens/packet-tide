@@ -1,5 +1,12 @@
 # Benchmark results
 
+The final preregistered integrated-binary result is summarized in
+[`2026-08-01-current-binary-bridge.md`](2026-08-01-current-binary-bridge.md), with
+the requirement-by-requirement audit in
+[`2026-08-01-goal-completion-audit.md`](2026-08-01-goal-completion-audit.md).
+The integrated `f6bc9a7` binary passed clean-path parity, modern-TCP speedup,
+repair-overhead, and correctness gates across 35 accepted randomized blocks.
+
 Results in `raw/initial` are exploratory smoke-test measurements from `spider`, not
 a publishable benchmark dataset. Every recorded transfer passed final SHA-256 and
 byte-for-byte verification.
