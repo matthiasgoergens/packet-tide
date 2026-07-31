@@ -1,0 +1,13 @@
+block_order	block_id	file_bytes	rate_mbit	rtt_ms	loss_percent	seed	transport_order
+1	b10-16777216-100-100-1-4105	16777216	100	100	1	4105	tcp-cubic,tcp4-cubic,udp,tcp-bbr
+2	b11-16777216-100-100-1-4106	16777216	100	100	1	4106	tcp-bbr,tcp-cubic,tcp4-cubic,udp
+3	b8-16777216-100-100-0.3-4107	16777216	100	100	0.3	4107	tcp-bbr,tcp-cubic,tcp4-cubic,udp
+4	b2-16777216-100-20-0-4105	16777216	100	20	0	4105	tcp4-cubic,tcp-bbr,udp,tcp-cubic
+5	b12-16777216-100-100-1-4107	16777216	100	100	1	4107	tcp4-cubic,udp,tcp-bbr,tcp-cubic
+6	b7-16777216-100-100-0.3-4106	16777216	100	100	0.3	4106	udp,tcp-bbr,tcp-cubic,tcp4-cubic
+7	b13-16777216-100-100-1-4108	16777216	100	100	1	4108	udp,tcp-bbr,tcp-cubic,tcp4-cubic
+8	b9-16777216-100-100-0.3-4108	16777216	100	100	0.3	4108	tcp-cubic,tcp4-cubic,udp,tcp-bbr
+9	b6-16777216-100-100-0.3-4105	16777216	100	100	0.3	4105	tcp4-cubic,udp,tcp-bbr,tcp-cubic
+10	b4-16777216-100-20-0-4107	16777216	100	20	0	4107	tcp-bbr,udp,tcp-cubic,tcp4-cubic
+11	b5-16777216-100-20-0-4108	16777216	100	20	0	4108	tcp-cubic,tcp4-cubic,tcp-bbr,udp
+12	b3-16777216-100-20-0-4106	16777216	100	20	0	4106	udp,tcp-cubic,tcp4-cubic,tcp-bbr
