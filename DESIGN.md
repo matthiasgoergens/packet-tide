@@ -156,7 +156,8 @@ below a frontier that has remained behind the negotiated grace interval. After
 the sender's `END`, the receiver likewise waits out that grace before declaring
 tail holes. This prevents ordinary reordering from being mistaken for loss while
 adding only a bounded delay to genuine repair. The baseline uses the sender's
-existing `2 * RTT + 50 ms` repair cooldown as the grace value.
+existing `2 * RTT + 50 ms` repair cooldown to deduplicate repairs and half of that
+value (never below one report interval) as the hole grace.
 
 ### Sender behavior
 

@@ -171,7 +171,7 @@ fn send(args: SendArgs) -> AnyResult<()> {
         expected_hash,
         session,
         chunks,
-        args.repair_cooldown.as_millis()
+        (args.repair_cooldown / 2).max(REPORT_INTERVAL).as_millis()
     )?;
     control.flush()?;
 
