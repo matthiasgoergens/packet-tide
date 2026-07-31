@@ -54,7 +54,7 @@ mkdir -p "$DATA" "$RESULTS"
 if [[ ! -f $SOURCE ]] || [[ $(stat -c %s "$SOURCE") -ne $FILE_BYTES ]]; then
   python3 "$ROOT/lab/generate-data.py" "$SOURCE" "$FILE_BYTES" 1
 fi
-rm -f "$OUTPUT" "$OUTPUT".part.* "$RECEIVER_LOG" "$SENDER_JSON"
+rm -f "$OUTPUT" "$OUTPUT".part "$OUTPUT".part.* "$RECEIVER_LOG" "$SENDER_JSON"
 
 "$ROOT/lab/configure-network.sh" "$RATE_MBIT" "$RTT_MS" "$LOSS_PERCENT" 10000 "$SEED" 0
 if [[ -n $TCP_CC ]]; then

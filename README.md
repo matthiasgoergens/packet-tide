@@ -50,9 +50,12 @@ See [DESIGN.md](DESIGN.md) for the proposed wire behavior and roadmap, and
 
 ## Prototype
 
-The current Rust prototype implements one-shot TCP and selective-repeat UDP file
-transfer with SHA-256 completion verification. It is intentionally a benchmark
-vehicle rather than a stable public protocol.
+The current Rust prototype implements one-shot TCP and resumable selective-repeat
+UDP file transfer with SHA-256 completion verification. Interrupted UDP transfers
+retain a stable `.part` file and durable `.part.map` receipt checkpoint beside the
+destination. Repeating the same command resumes when size and hash match; a
+different object safely starts over. It is intentionally a benchmark vehicle
+rather than a stable public protocol.
 
 ```sh
 cargo build --release
@@ -64,6 +67,13 @@ target/release/tsunami-udp send \
   --connect RECEIVER:9000 --udp-target RECEIVER:9001 \
   --file source.bin --transport udp --rate-mbps 100
 ```
+
+The receiver syncs data before atomically publishing each receipt checkpoint.
+Consequently, a crash can cause a few chunks to be retransmitted but cannot make a
+restart trust data that was not durable. Receipt bitmaps are capped at 64 MiB per
+endpoint (about a 591 GiB file with the current payload), and sender repair queues
+are capped at 65,536 chunks. `lab/test-resume.sh` kills both endpoints mid-transfer,
+resumes with a new session, verifies the output, and checks a completion retry.
 
 The Linux namespace harness and its safety boundaries are described in
 [lab/README.md](lab/README.md). Exploratory measurements are retained in

@@ -12,12 +12,20 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+mod resume;
+
+use resume::ResumeState;
+
 const DATAGRAM_SIZE: usize = 1200;
 const HEADER_SIZE: usize = 18;
 const PAYLOAD_SIZE: usize = DATAGRAM_SIZE - HEADER_SIZE;
 const REPORT_INTERVAL: Duration = Duration::from_millis(50);
 const MAX_RANGES_PER_REPORT: usize = 512;
 const TCP4_LANES: usize = 4;
+const RESUME_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(1);
+const MAX_QUEUED_REPAIRS: usize = 65_536;
+const MAX_BITMAP_BYTES: usize = 64 * 1024 * 1024;
+const MAX_CHUNKS: u64 = (MAX_BITMAP_BYTES as u64) * 8;
 
 type AnyResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -146,6 +154,12 @@ fn send(args: SendArgs) -> AnyResult<()> {
     let expected_hash = hash_file(&args.file)?;
     let session = new_session_id();
     let chunks = size.div_ceil(PAYLOAD_SIZE as u64);
+    if chunks > MAX_CHUNKS {
+        return Err(format!(
+            "file requires {chunks} chunks; maximum is {MAX_CHUNKS} to keep receipt memory bounded"
+        )
+        .into());
+    }
 
     let mut control = TcpStream::connect(args.connect)?;
     control.set_nodelay(true)?;
@@ -160,11 +174,22 @@ fn send(args: SendArgs) -> AnyResult<()> {
     )?;
     control.flush()?;
 
-    let mut ready_reader = BufReader::new(control.try_clone()?);
-    let mut ready = String::new();
-    ready_reader.read_line(&mut ready)?;
-    if ready.trim() != "READY" {
-        return Err(format!("receiver rejected transfer: {}", ready.trim()).into());
+    let (mut control, durable_chunks, already_complete) =
+        read_acceptance(control, args.transport, chunks)?;
+    let resumed_chunks = durable_chunks
+        .iter()
+        .map(|word| word.count_ones() as u64)
+        .sum::<u64>();
+    if already_complete {
+        println!(
+            "{{\"transport\":\"{}\",\"bytes\":{},\"elapsed_ms\":0.0,\
+             \"goodput_mbps\":0.0,\"datagrams\":0,\"repairs\":0,\
+             \"udp_ip_bytes_offered\":0,\"resumed_chunks\":{}}}",
+            args.transport.display_name(),
+            size,
+            chunks
+        );
+        return Ok(());
     }
 
     let started = Instant::now();
@@ -187,6 +212,7 @@ fn send(args: SendArgs) -> AnyResult<()> {
                 target: args.udp_target,
                 rate_mbps: args.rate_mbps,
                 repair_cooldown: args.repair_cooldown,
+                durable_chunks,
             };
             send_udp(&args.file, &config, &mut control)?
         }
@@ -201,14 +227,15 @@ fn send(args: SendArgs) -> AnyResult<()> {
     println!(
         "{{\"transport\":\"{}\",\"bytes\":{},\"elapsed_ms\":{:.3},\
          \"goodput_mbps\":{:.3},\"datagrams\":{},\"repairs\":{},\
-         \"udp_ip_bytes_offered\":{}}}",
+         \"udp_ip_bytes_offered\":{},\"resumed_chunks\":{}}}",
         args.transport.display_name(),
         size,
         elapsed.as_secs_f64() * 1000.0,
         goodput_mbps,
         datagrams,
         repairs,
-        udp_ip_bytes_offered
+        udp_ip_bytes_offered,
+        resumed_chunks
     );
     Ok(())
 }
@@ -221,6 +248,57 @@ fn expect_completion(control: TcpStream) -> AnyResult<()> {
         return Err(format!("transfer did not complete: {}", completion.trim()).into());
     }
     Ok(())
+}
+
+fn read_acceptance(
+    control: TcpStream,
+    transport: Transport,
+    chunks: u64,
+) -> AnyResult<(TcpStream, Vec<u64>, bool)> {
+    let mut reader = BufReader::new(control);
+    let mut line = String::new();
+    reader.read_line(&mut line)?;
+    if line.trim() == "COMPLETE" {
+        return Ok((reader.into_inner(), Vec::new(), true));
+    }
+    if line.trim() != "READY" {
+        return Err(format!("receiver rejected transfer: {}", line.trim()).into());
+    }
+    if transport != Transport::Udp {
+        return Ok((reader.into_inner(), Vec::new(), false));
+    }
+
+    let words = usize::try_from(chunks.div_ceil(64))?;
+    let mut bitmap = vec![0_u64; words];
+    loop {
+        line.clear();
+        if reader.read_line(&mut line)? == 0 {
+            return Err("receiver closed during resume negotiation".into());
+        }
+        let trimmed = line.trim();
+        if trimmed == "GO" {
+            break;
+        }
+        let fields: Vec<_> = trimmed.split_whitespace().collect();
+        if fields.len() != 3 || fields[0] != "H" {
+            return Err(format!("invalid resume response: {trimmed}").into());
+        }
+        let index: usize = fields[1].parse()?;
+        let word = u64::from_str_radix(fields[2], 16)?;
+        if index >= bitmap.len() || bitmap[index] != 0 || word == 0 {
+            return Err("invalid or duplicate resume bitmap word".into());
+        }
+        bitmap[index] = word;
+    }
+    if chunks % 64 != 0
+        && bitmap.last().is_some_and(|word| {
+            let valid_mask = (1_u64 << (chunks % 64)) - 1;
+            word & !valid_mask != 0
+        })
+    {
+        return Err("resume bitmap contains chunks beyond the file".into());
+    }
+    Ok((reader.into_inner(), bitmap, false))
 }
 
 fn send_tcp(path: &Path, control: &mut TcpStream) -> AnyResult<()> {
@@ -296,6 +374,7 @@ struct UdpSendConfig {
     target: SocketAddr,
     rate_mbps: f64,
     repair_cooldown: Duration,
+    durable_chunks: Vec<u64>,
 }
 
 fn send_udp(
@@ -322,8 +401,14 @@ fn send_udp(
     let pending_for_reader = Arc::clone(&pending);
     let complete_for_reader = Arc::clone(&complete);
     let error_for_reader = Arc::clone(&feedback_error);
+    let chunks_for_reader = config.chunks;
     let feedback_thread = thread::spawn(move || {
-        if let Err(error) = read_feedback(reader_stream, pending_for_reader, complete_for_reader) {
+        if let Err(error) = read_feedback(
+            reader_stream,
+            pending_for_reader,
+            complete_for_reader,
+            chunks_for_reader,
+        ) {
             *error_for_reader
                 .lock()
                 .expect("feedback error mutex poisoned") = Some(error.to_string());
@@ -337,6 +422,9 @@ fn send_udp(
     let mut udp_ip_bytes_offered = 0_u64;
 
     for sequence in 0..config.chunks {
+        if bitmap_contains(&config.durable_chunks, sequence) {
+            continue;
+        }
         let packet_len = build_packet(&file, config.size, config.session, sequence, &mut packet)?;
         socket.send(&packet[..packet_len])?;
         datagrams += 1;
@@ -411,6 +499,7 @@ fn read_feedback(
     stream: TcpStream,
     pending: Arc<Mutex<RepairQueue>>,
     complete: Arc<AtomicBool>,
+    chunks: u64,
 ) -> AnyResult<()> {
     let reader = BufReader::new(stream);
     for line in reader.lines() {
@@ -426,20 +515,31 @@ fn read_feedback(
             queue
                 .last_sent
                 .retain(|_, sent_at| now.duration_since(*sent_at) < cooldown);
-            for range in ranges.split(',').filter(|part| !part.is_empty()) {
-                let (start, end) = parse_range(range)?;
-                for sequence in start..=end {
-                    if !queue.last_sent.contains_key(&sequence) && queue.queued.insert(sequence) {
-                        queue.queue.push_back(sequence);
-                    }
-                }
-            }
+            enqueue_repairs(&mut queue, ranges, chunks)?;
         } else if let Some(message) = line.strip_prefix("ERROR ") {
             return Err(format!("receiver error: {message}").into());
         }
     }
     if !complete.load(Ordering::Acquire) {
         return Err("control connection closed before completion".into());
+    }
+    Ok(())
+}
+
+fn enqueue_repairs(queue: &mut RepairQueue, ranges: &str, chunks: u64) -> AnyResult<()> {
+    'reports: for range in ranges.split(',').filter(|part| !part.is_empty()) {
+        let (start, end) = parse_range(range)?;
+        if end >= chunks {
+            return Err("receiver requested a chunk beyond the file".into());
+        }
+        for sequence in start..=end {
+            if queue.queued.len() >= MAX_QUEUED_REPAIRS {
+                break 'reports;
+            }
+            if !queue.last_sent.contains_key(&sequence) && queue.queued.insert(sequence) {
+                queue.queue.push_back(sequence);
+            }
+        }
     }
     Ok(())
 }
@@ -466,6 +566,11 @@ fn take_repairs(pending: &Arc<Mutex<RepairQueue>>, limit: usize) -> Vec<u64> {
             break;
         };
         pending.queued.remove(&sequence);
+        if pending.last_sent.len() >= MAX_QUEUED_REPAIRS
+            && let Some(oldest) = pending.last_sent.keys().next().copied()
+        {
+            pending.last_sent.remove(&oldest);
+        }
         pending.last_sent.insert(sequence, Instant::now());
         result.push(sequence);
     }
@@ -540,20 +645,28 @@ fn receive(args: ReceiveArgs) -> AnyResult<()> {
     reader.read_line(&mut hello)?;
     let hello = parse_hello(&hello)?;
     let mut control = reader.into_inner();
-    control.write_all(b"READY\n")?;
-    control.flush()?;
 
     if let Some(parent) = args.out.parent() {
         fs::create_dir_all(parent)?;
     }
     let temporary = temporary_path(&args.out);
     let result = match hello.transport {
-        Transport::Tcp => receive_tcp(&mut control, &temporary, &args.out, &hello),
-        Transport::Tcp4 => receive_tcp4(&listener, &mut control, &temporary, &args.out, &hello),
-        Transport::Udp => receive_udp(control, udp, &temporary, &args.out, &hello),
+        Transport::Tcp => {
+            control.write_all(b"READY\n")?;
+            control.flush()?;
+            receive_tcp(&mut control, &temporary, &args.out, &hello)
+        }
+        Transport::Tcp4 => {
+            control.write_all(b"READY\n")?;
+            control.flush()?;
+            receive_tcp4(&listener, &mut control, &temporary, &args.out, &hello)
+        }
+        Transport::Udp => receive_udp(control, udp, &args.out, &hello),
     };
     if let Err(error) = &result {
-        let _ = fs::remove_file(&temporary);
+        if hello.transport != Transport::Udp {
+            let _ = fs::remove_file(&temporary);
+        }
         eprintln!("receive from {peer} failed: {error}");
     }
     result
@@ -588,6 +701,9 @@ fn parse_hello(line: &str) -> AnyResult<Hello> {
     let expected_chunks = hello.size.div_ceil(PAYLOAD_SIZE as u64);
     if hello.chunks != expected_chunks {
         return Err("chunk count does not match file size".into());
+    }
+    if hello.chunks > MAX_CHUNKS {
+        return Err("file exceeds the bounded receipt-map limit".into());
     }
     Ok(hello)
 }
@@ -718,23 +834,34 @@ fn receive_tcp4_range(mut stream: TcpStream, file: File, start: u64, end: u64) -
 fn receive_udp(
     mut control: TcpStream,
     udp: UdpSocket,
-    temporary: &Path,
     destination: &Path,
     hello: &Hello,
 ) -> AnyResult<()> {
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .read(true)
-        .write(true)
-        .open(temporary)?;
-    file.set_len(hello.size)?;
-    let bitmap_words = hello.chunks.div_ceil(64) as usize;
-    let mut received = vec![0_u64; bitmap_words];
-    let mut received_count = 0_u64;
-    let mut highest = None::<u64>;
+    if destination
+        .metadata()
+        .is_ok_and(|metadata| metadata.len() == hello.size)
+        && hash_file(destination)? == hello.hash
+    {
+        control.write_all(b"COMPLETE\n")?;
+        control.flush()?;
+        return Ok(());
+    }
+
+    let (file, mut state) = ResumeState::open(destination, hello.size, hello.chunks, &hello.hash)?;
+    control.write_all(b"READY\n")?;
+    for (index, word) in state.bitmap.iter().copied().enumerate() {
+        if word != 0 {
+            writeln!(control, "H {index} {word:016x}")?;
+        }
+    }
+    control.write_all(b"GO\n")?;
+    control.flush()?;
+
+    let mut highest = highest_received(&state.bitmap);
     let mut ended = false;
     let mut last_report = Instant::now();
+    let mut last_checkpoint = Instant::now();
+    let mut checkpoint_dirty = false;
     let (control_tx, control_rx) = mpsc::channel();
     let control_reader = control.try_clone()?;
     let control_thread = thread::spawn(move || {
@@ -783,14 +910,15 @@ fn receive_udp(
                 if payload_len != expected_len {
                     continue;
                 }
-                if !bitmap_contains(&received, sequence) {
+                if !bitmap_contains(&state.bitmap, sequence) {
                     write_all_at(
                         &file,
                         &packet[HEADER_SIZE..HEADER_SIZE + payload_len],
                         offset,
                     )?;
-                    bitmap_insert(&mut received, sequence);
-                    received_count += 1;
+                    bitmap_insert(&mut state.bitmap, sequence);
+                    state.received_count += 1;
+                    checkpoint_dirty = true;
                 }
                 highest = Some(highest.map_or(sequence, |old| old.max(sequence)));
             }
@@ -799,30 +927,50 @@ fn receive_udp(
                     error.kind(),
                     std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                 ) => {}
-            Err(error) => return Err(error.into()),
+            Err(error) => {
+                if checkpoint_dirty {
+                    state.checkpoint(&file)?;
+                }
+                return Err(error.into());
+            }
         }
 
         while let Ok(event) = control_rx.try_recv() {
             match event {
                 ControlEvent::End => ended = true,
                 ControlEvent::Closed => {
+                    if checkpoint_dirty {
+                        state.checkpoint(&file)?;
+                    }
                     return Err("control connection closed before UDP completion".into());
                 }
-                ControlEvent::Error(error) => return Err(error.into()),
+                ControlEvent::Error(error) => {
+                    if checkpoint_dirty {
+                        state.checkpoint(&file)?;
+                    }
+                    return Err(error.into());
+                }
             }
         }
 
-        if ended && received_count == hello.chunks {
+        if ended && state.received_count == hello.chunks {
             file.sync_all()?;
-            let actual_hash = hash_file(temporary)?;
+            let actual_hash = hash_open_file(&file)?;
             if actual_hash != hello.hash {
                 control.write_all(b"ERROR hash-mismatch\n")?;
+                state.discard();
                 return Err("received UDP file hash did not match".into());
             }
-            install_file(temporary, destination)?;
+            state.install(destination)?;
             control.write_all(b"COMPLETE\n")?;
             control.flush()?;
             break;
+        }
+
+        if checkpoint_dirty && last_checkpoint.elapsed() >= RESUME_CHECKPOINT_INTERVAL {
+            state.checkpoint(&file)?;
+            checkpoint_dirty = false;
+            last_checkpoint = Instant::now();
         }
 
         if last_report.elapsed() >= REPORT_INTERVAL {
@@ -831,7 +979,7 @@ fn receive_udp(
             } else {
                 highest.map_or(0, |value| value + 1)
             };
-            let ranges = missing_ranges(&received, report_end, MAX_RANGES_PER_REPORT);
+            let ranges = missing_ranges(&state.bitmap, report_end, MAX_RANGES_PER_REPORT);
             write!(control, "M ")?;
             for (index, (start, end)) in ranges.iter().enumerate() {
                 if index > 0 {
@@ -853,6 +1001,30 @@ fn receive_udp(
         .join()
         .map_err(|_| "control reader thread panicked")?;
     Ok(())
+}
+
+fn highest_received(bitmap: &[u64]) -> Option<u64> {
+    bitmap
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, word)| **word != 0)
+        .map(|(index, word)| index as u64 * 64 + (63 - word.leading_zeros() as u64))
+}
+
+fn hash_open_file(file: &File) -> AnyResult<String> {
+    let mut file = file.try_clone()?;
+    file.seek(SeekFrom::Start(0))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(hex_digest(hasher.finalize().as_slice()))
 }
 
 enum ControlEvent {
@@ -970,6 +1142,27 @@ mod tests {
         assert_eq!(parse_range("7").unwrap(), (7, 7));
         assert_eq!(parse_range("7-11").unwrap(), (7, 11));
         assert!(parse_range("11-7").is_err());
+    }
+
+    #[test]
+    fn repair_queue_has_a_hard_entry_limit() {
+        let mut queue = RepairQueue::new(Duration::from_secs(60));
+        enqueue_repairs(&mut queue, "0-999999", 1_000_000).unwrap();
+        assert_eq!(queue.queue.len(), MAX_QUEUED_REPAIRS);
+        assert_eq!(queue.queued.len(), MAX_QUEUED_REPAIRS);
+        assert!(enqueue_repairs(&mut queue, "1000000", 1_000_000).is_err());
+
+        let pending = Arc::new(Mutex::new(queue));
+        let repairs = take_repairs(&pending, MAX_QUEUED_REPAIRS);
+        assert_eq!(repairs.len(), MAX_QUEUED_REPAIRS);
+        assert!(
+            pending
+                .lock()
+                .expect("repair queue mutex poisoned")
+                .last_sent
+                .len()
+                <= MAX_QUEUED_REPAIRS
+        );
     }
 
     #[test]

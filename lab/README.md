@@ -79,3 +79,18 @@ router namespace using Linux `AF_PACKET`. It reports observed IPv4-size counts a
 fails the validation criterion if any IP packet exceeds the 1,500-byte path MTU.
 With the namespaces already set up, `validate-packet-sizes.sh` performs this check
 during 16 MiB UDP, CUBIC, BBR, and four-stream CUBIC transfers.
+
+## Resume regression
+
+`test-resume.sh` is a loopback correctness test independent of the confirmatory
+performance matrix. It generates a deterministic 128 MiB file, kills the UDP
+sender and receiver after five seconds, restarts both endpoints, verifies that the
+sender skips exactly the durable checkpointed chunks, compares the completed file,
+and reconnects once more to verify zero-datagram completion recovery. It records
+receiver peak RSS with `/usr/bin/time -v`.
+
+On `spider`, run the whole test at reduced priority:
+
+```sh
+nice -n 10 ionice -c2 -n7 bash lab/test-resume.sh
+```

@@ -92,6 +92,12 @@ The sender proposes:
 The receiver accepts the session, creates a temporary output file, allocates a
 chunk-receipt bitmap, and tells the sender which UDP address and port to use.
 
+For UDP resume, immutable size, SHA-256, payload size, and chunk count identify the
+object while every connection gets a fresh random session ID. Before sending new
+data, the receiver streams nonzero words from its durable receipt bitmap over the
+control connection. The sender skips those chunks; UDP packets from an old session
+remain harmless because their session ID no longer matches.
+
 ### UDP data packet
 
 Each data packet contains at least:
@@ -116,6 +122,20 @@ later security work.
 The receiver writes valid chunks directly into their offsets in a temporary file
 and marks them in a bitmap. Duplicate chunks are ignored. It does not retain the
 whole file in memory.
+
+The prototype checkpoints this state beside the destination as a stable `.part`
+file and an atomically replaced `.part.map`. Checkpoint ordering is data
+`fdatasync`, then map write and `fsync`, then map rename. A crash before the rename
+leaves the previous valid map and merely causes redundant retransmission. Exact
+metadata and map length are validated on restart; a mismatched or torn map is not
+trusted. Checkpoints occur at most once per second, while live missing reports can
+remain more frequent.
+
+Memory has explicit ceilings. Each endpoint rejects objects requiring more than a
+64 MiB receipt bitmap: 536,870,912 chunks, or about 591 GiB with the current
+1,182-byte payload. The sender's queued-repair set and cooldown cache are each
+capped at 65,536 chunk entries. Repeated cumulative reports refill a capped queue,
+so dropping excess advisory entries affects latency rather than correctness.
 
 At a configurable interval, initially 50-100 ms, the receiver sends a status
 report over the control connection. A report contains:
@@ -157,6 +177,11 @@ both sides may then release session state.
 
 If verification fails, the receiver must not claim success. Initially it may
 request a complete retry; finer corruption localization can be added later.
+
+If the receiver has already atomically installed a destination with matching size
+and SHA-256, a reconnect returns `COMPLETE` without sending UDP data. This covers a
+receiver or network failure after installation but before the sender observed the
+final completion message.
 
 Completion must not be a single unreliable UDP message. A lost final message
 must not leave one side transmitting forever or the other side unsure whether the
