@@ -165,12 +165,13 @@ fn send(args: SendArgs) -> AnyResult<()> {
     control.set_nodelay(true)?;
     writeln!(
         control,
-        "TSU1 {} {} {} {} {}",
+        "TSU1 {} {} {} {} {} {}",
         args.transport.wire_name(),
         size,
         expected_hash,
         session,
-        chunks
+        chunks,
+        args.repair_cooldown.as_millis()
     )?;
     control.flush()?;
 
@@ -678,11 +679,12 @@ struct Hello {
     hash: String,
     session: u64,
     chunks: u64,
+    repair_grace: Duration,
 }
 
 fn parse_hello(line: &str) -> AnyResult<Hello> {
     let parts: Vec<_> = line.split_whitespace().collect();
-    if parts.len() != 6 || parts[0] != "TSU1" {
+    if parts.len() != 7 || parts[0] != "TSU1" {
         return Err("invalid TSU1 greeting".into());
     }
     let transport = match parts[1] {
@@ -697,6 +699,7 @@ fn parse_hello(line: &str) -> AnyResult<Hello> {
         hash: parts[3].to_owned(),
         session: parts[4].parse()?,
         chunks: parts[5].parse()?,
+        repair_grace: Duration::from_millis(parts[6].parse()?),
     };
     let expected_chunks = hello.size.div_ceil(PAYLOAD_SIZE as u64);
     if hello.chunks != expected_chunks {
@@ -704,6 +707,9 @@ fn parse_hello(line: &str) -> AnyResult<Hello> {
     }
     if hello.chunks > MAX_CHUNKS {
         return Err("file exceeds the bounded receipt-map limit".into());
+    }
+    if hello.repair_grace > Duration::from_secs(60) {
+        return Err("repair grace exceeds 60 seconds".into());
     }
     Ok(hello)
 }
@@ -859,7 +865,10 @@ fn receive_udp(
 
     let mut highest = highest_received(&state.bitmap);
     let mut ended = false;
+    let mut ended_at = None::<Instant>;
     let mut last_report = Instant::now();
+    let mut frontier_history = VecDeque::new();
+    frontier_history.push_back((Instant::now(), highest.map_or(0, |value| value + 1)));
     let mut last_checkpoint = Instant::now();
     let mut checkpoint_dirty = false;
     let (control_tx, control_rx) = mpsc::channel();
@@ -937,7 +946,10 @@ fn receive_udp(
 
         while let Ok(event) = control_rx.try_recv() {
             match event {
-                ControlEvent::End => ended = true,
+                ControlEvent::End => {
+                    ended = true;
+                    ended_at.get_or_insert_with(Instant::now);
+                }
                 ControlEvent::Closed => {
                     if checkpoint_dirty {
                         state.checkpoint(&file)?;
@@ -974,10 +986,19 @@ fn receive_udp(
         }
 
         if last_report.elapsed() >= REPORT_INTERVAL {
-            let report_end = if ended {
+            let now = Instant::now();
+            let mature_end = mature_frontier(
+                &mut frontier_history,
+                now,
+                highest.map_or(0, |value| value + 1),
+                hello.repair_grace,
+            );
+            let report_end = if ended
+                && ended_at.is_some_and(|value| now.duration_since(value) >= hello.repair_grace)
+            {
                 hello.chunks
             } else {
-                highest.map_or(0, |value| value + 1)
+                mature_end
             };
             let ranges = missing_ranges(&state.bitmap, report_end, MAX_RANGES_PER_REPORT);
             write!(control, "M ")?;
@@ -1010,6 +1031,25 @@ fn highest_received(bitmap: &[u64]) -> Option<u64> {
         .rev()
         .find(|(_, word)| **word != 0)
         .map(|(index, word)| index as u64 * 64 + (63 - word.leading_zeros() as u64))
+}
+
+fn mature_frontier(
+    history: &mut VecDeque<(Instant, u64)>,
+    now: Instant,
+    current: u64,
+    grace: Duration,
+) -> u64 {
+    if history.back().is_none_or(|(_, value)| *value != current) {
+        history.push_back((now, current));
+    }
+    let cutoff = now.checked_sub(grace).unwrap_or(now);
+    while history.len() > 1 && history.get(1).is_some_and(|(seen, _)| *seen <= cutoff) {
+        history.pop_front();
+    }
+    history
+        .front()
+        .filter(|(seen, _)| *seen <= cutoff)
+        .map_or(0, |(_, value)| *value)
 }
 
 fn hash_open_file(file: &File) -> AnyResult<String> {
@@ -1162,6 +1202,29 @@ mod tests {
                 .last_sent
                 .len()
                 <= MAX_QUEUED_REPAIRS
+        );
+    }
+
+    #[test]
+    fn frontier_becomes_reportable_only_after_the_grace() {
+        let base = Instant::now();
+        let grace = Duration::from_millis(100);
+        let mut history = VecDeque::from([(base, 0)]);
+        assert_eq!(
+            mature_frontier(&mut history, base + Duration::from_millis(50), 100, grace),
+            0
+        );
+        assert_eq!(
+            mature_frontier(&mut history, base + Duration::from_millis(120), 200, grace),
+            0
+        );
+        assert_eq!(
+            mature_frontier(&mut history, base + Duration::from_millis(160), 200, grace),
+            100
+        );
+        assert_eq!(
+            mature_frontier(&mut history, base + Duration::from_millis(230), 200, grace),
+            200
         );
     }
 

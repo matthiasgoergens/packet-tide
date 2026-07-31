@@ -88,6 +88,7 @@ The sender proposes:
 - UDP payload size;
 - total chunk count;
 - initial pacing rate.
+- a missing-hole grace interval derived from the expected feedback round trip.
 
 The receiver accepts the session, creates a temporary output file, allocates a
 chunk-receipt bitmap, and tells the sender which UDP address and port to use.
@@ -148,6 +149,14 @@ report over the control connection. A report contains:
 Ranges keep reports compact. If a report would become too large, it can be split
 across messages or represented as bitmap windows. Reports are cumulative enough
 that losing or superseding one never makes correctness depend on it.
+
+The newest observed sequence is not immediately eligible for a missing report.
+The receiver retains a small time history of the frontier and reports holes only
+below a frontier that has remained behind the negotiated grace interval. After
+the sender's `END`, the receiver likewise waits out that grace before declaring
+tail holes. This prevents ordinary reordering from being mistaken for loss while
+adding only a bounded delay to genuine repair. The baseline uses the sender's
+existing `2 * RTT + 50 ms` repair cooldown as the grace value.
 
 ### Sender behavior
 
