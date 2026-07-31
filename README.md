@@ -78,3 +78,7 @@ resumes with a new session, verifies the output, and checks a completion retry.
 The Linux namespace harness and its safety boundaries are described in
 [lab/README.md](lab/README.md). Exploratory measurements are retained in
 [results/README.md](results/README.md).
+
+## License
+
+This project is open source under the [MIT License](LICENSE).
