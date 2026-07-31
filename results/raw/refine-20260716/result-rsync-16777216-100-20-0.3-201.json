@@ -1,0 +1,1 @@
+{"transport":"rsync","bytes":16777216,"elapsed_ms":3034.791,"goodput_mbps":44.226,"datagrams":0,"repairs":0,"scenario":{"file_bytes":16777216,"rate_mbit":100,"rtt_ms":20,"loss_percent":0.3,"seed":201},"verified":true}

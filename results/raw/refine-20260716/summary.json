@@ -1,0 +1,322 @@
+[
+  {
+    "file_bytes": 1048576,
+    "rate_mbit": 100,
+    "rtt_ms": 100,
+    "loss_percent": 0,
+    "transports": {
+      "rsync": {
+        "runs": 3,
+        "median_goodput_mbps": 4.548,
+        "min_goodput_mbps": 4.541,
+        "max_goodput_mbps": 4.576,
+        "median_elapsed_ms": 1844.272,
+        "median_repairs": 0
+      },
+      "tcp": {
+        "runs": 3,
+        "median_goodput_mbps": 13.686,
+        "min_goodput_mbps": 13.682,
+        "max_goodput_mbps": 13.703,
+        "median_elapsed_ms": 612.924,
+        "median_repairs": 0
+      },
+      "udp": {
+        "runs": 3,
+        "median_goodput_mbps": 38.669,
+        "min_goodput_mbps": 38.664,
+        "max_goodput_mbps": 38.695,
+        "median_elapsed_ms": 216.936,
+        "median_repairs": 0
+      }
+    }
+  },
+  {
+    "file_bytes": 4194304,
+    "rate_mbit": 100,
+    "rtt_ms": 100,
+    "loss_percent": 0,
+    "transports": {
+      "rsync": {
+        "runs": 3,
+        "median_goodput_mbps": 15.823,
+        "min_goodput_mbps": 15.803,
+        "max_goodput_mbps": 15.824,
+        "median_elapsed_ms": 2120.57,
+        "median_repairs": 0
+      },
+      "tcp": {
+        "runs": 3,
+        "median_goodput_mbps": 37.501,
+        "min_goodput_mbps": 37.48,
+        "max_goodput_mbps": 37.516,
+        "median_elapsed_ms": 894.77,
+        "median_repairs": 0
+      },
+      "udp": {
+        "runs": 3,
+        "median_goodput_mbps": 69.255,
+        "min_goodput_mbps": 68.703,
+        "max_goodput_mbps": 69.538,
+        "median_elapsed_ms": 484.503,
+        "median_repairs": 0
+      }
+    }
+  },
+  {
+    "file_bytes": 8388608,
+    "rate_mbit": 100,
+    "rtt_ms": 20,
+    "loss_percent": 1,
+    "transports": {
+      "rsync": {
+        "runs": 3,
+        "median_goodput_mbps": 26.305,
+        "min_goodput_mbps": 11.22,
+        "max_goodput_mbps": 59.047,
+        "median_elapsed_ms": 2551.204,
+        "median_repairs": 0
+      },
+      "tcp": {
+        "runs": 3,
+        "median_goodput_mbps": 31.072,
+        "min_goodput_mbps": 11.783,
+        "max_goodput_mbps": 84.199,
+        "median_elapsed_ms": 2159.802,
+        "median_repairs": 0
+      },
+      "udp": {
+        "runs": 3,
+        "median_goodput_mbps": 82.935,
+        "min_goodput_mbps": 81.875,
+        "max_goodput_mbps": 89.839,
+        "median_elapsed_ms": 809.178,
+        "median_repairs": 70
+      }
+    }
+  },
+  {
+    "file_bytes": 8388608,
+    "rate_mbit": 100,
+    "rtt_ms": 100,
+    "loss_percent": 0.3,
+    "transports": {
+      "rsync": {
+        "runs": 3,
+        "median_goodput_mbps": 6.868,
+        "min_goodput_mbps": 4.773,
+        "max_goodput_mbps": 27.026,
+        "median_elapsed_ms": 9771.387,
+        "median_repairs": 0
+      },
+      "tcp": {
+        "runs": 3,
+        "median_goodput_mbps": 7.839,
+        "min_goodput_mbps": 5.124,
+        "max_goodput_mbps": 53.89,
+        "median_elapsed_ms": 8561.196,
+        "median_repairs": 0
+      },
+      "udp": {
+        "runs": 3,
+        "median_goodput_mbps": 70.476,
+        "min_goodput_mbps": 67.66,
+        "max_goodput_mbps": 72.021,
+        "median_elapsed_ms": 952.216,
+        "median_repairs": 22
+      }
+    }
+  },
+  {
+    "file_bytes": 8388608,
+    "rate_mbit": 100,
+    "rtt_ms": 100,
+    "loss_percent": 0.5,
+    "transports": {
+      "rsync": {
+        "runs": 3,
+        "median_goodput_mbps": 4.394,
+        "min_goodput_mbps": 3.41,
+        "max_goodput_mbps": 27.44,
+        "median_elapsed_ms": 15273.158,
+        "median_repairs": 0
+      },
+      "tcp": {
+        "runs": 3,
+        "median_goodput_mbps": 4.836,
+        "min_goodput_mbps": 3.634,
+        "max_goodput_mbps": 53.913,
+        "median_elapsed_ms": 13875.82,
+        "median_repairs": 0
+      },
+      "udp": {
+        "runs": 3,
+        "median_goodput_mbps": 72.417,
+        "min_goodput_mbps": 70.837,
+        "max_goodput_mbps": 74.008,
+        "median_elapsed_ms": 926.701,
+        "median_repairs": 33
+      }
+    }
+  },
+  {
+    "file_bytes": 16777216,
+    "rate_mbit": 100,
+    "rtt_ms": 20,
+    "loss_percent": 0.3,
+    "transports": {
+      "rsync": {
+        "runs": 3,
+        "median_goodput_mbps": 44.226,
+        "min_goodput_mbps": 23.782,
+        "max_goodput_mbps": 73.49,
+        "median_elapsed_ms": 3034.791,
+        "median_repairs": 0
+      },
+      "tcp": {
+        "runs": 3,
+        "median_goodput_mbps": 50.667,
+        "min_goodput_mbps": 25.194,
+        "max_goodput_mbps": 91.348,
+        "median_elapsed_ms": 2649.016,
+        "median_repairs": 0
+      },
+      "udp": {
+        "runs": 3,
+        "median_goodput_mbps": 88.399,
+        "min_goodput_mbps": 88.279,
+        "max_goodput_mbps": 88.925,
+        "median_elapsed_ms": 1518.319,
+        "median_repairs": 50
+      }
+    }
+  },
+  {
+    "file_bytes": 16777216,
+    "rate_mbit": 100,
+    "rtt_ms": 40,
+    "loss_percent": 0,
+    "transports": {
+      "rsync": {
+        "runs": 3,
+        "median_goodput_mbps": 62.712,
+        "min_goodput_mbps": 62.607,
+        "max_goodput_mbps": 62.751,
+        "median_elapsed_ms": 2140.215,
+        "median_repairs": 0
+      },
+      "tcp": {
+        "runs": 3,
+        "median_goodput_mbps": 85.483,
+        "min_goodput_mbps": 85.481,
+        "max_goodput_mbps": 85.483,
+        "median_elapsed_ms": 1570.115,
+        "median_repairs": 0
+      },
+      "udp": {
+        "runs": 3,
+        "median_goodput_mbps": 89.514,
+        "min_goodput_mbps": 88.855,
+        "max_goodput_mbps": 89.822,
+        "median_elapsed_ms": 1499.397,
+        "median_repairs": 0
+      }
+    }
+  },
+  {
+    "file_bytes": 16777216,
+    "rate_mbit": 100,
+    "rtt_ms": 60,
+    "loss_percent": 0,
+    "transports": {
+      "rsync": {
+        "runs": 3,
+        "median_goodput_mbps": 54.351,
+        "min_goodput_mbps": 54.252,
+        "max_goodput_mbps": 54.419,
+        "median_elapsed_ms": 2469.456,
+        "median_repairs": 0
+      },
+      "tcp": {
+        "runs": 3,
+        "median_goodput_mbps": 79.537,
+        "min_goodput_mbps": 79.534,
+        "max_goodput_mbps": 79.539,
+        "median_elapsed_ms": 1687.493,
+        "median_repairs": 0
+      },
+      "udp": {
+        "runs": 3,
+        "median_goodput_mbps": 89.208,
+        "min_goodput_mbps": 88.324,
+        "max_goodput_mbps": 89.211,
+        "median_elapsed_ms": 1504.555,
+        "median_repairs": 0
+      }
+    }
+  },
+  {
+    "file_bytes": 16777216,
+    "rate_mbit": 100,
+    "rtt_ms": 80,
+    "loss_percent": 0,
+    "transports": {
+      "rsync": {
+        "runs": 3,
+        "median_goodput_mbps": 47.583,
+        "min_goodput_mbps": 47.485,
+        "max_goodput_mbps": 47.591,
+        "median_elapsed_ms": 2820.698,
+        "median_repairs": 0
+      },
+      "tcp": {
+        "runs": 3,
+        "median_goodput_mbps": 74.241,
+        "min_goodput_mbps": 74.233,
+        "max_goodput_mbps": 74.249,
+        "median_elapsed_ms": 1807.873,
+        "median_repairs": 0
+      },
+      "udp": {
+        "runs": 3,
+        "median_goodput_mbps": 87.45,
+        "min_goodput_mbps": 87.165,
+        "max_goodput_mbps": 87.69,
+        "median_elapsed_ms": 1534.789,
+        "median_repairs": 0
+      }
+    }
+  },
+  {
+    "file_bytes": 67108864,
+    "rate_mbit": 100,
+    "rtt_ms": 100,
+    "loss_percent": 0,
+    "transports": {
+      "rsync": {
+        "runs": 3,
+        "median_goodput_mbps": 71.993,
+        "min_goodput_mbps": 71.838,
+        "max_goodput_mbps": 72.378,
+        "median_elapsed_ms": 7457.241,
+        "median_repairs": 0
+      },
+      "tcp": {
+        "runs": 3,
+        "median_goodput_mbps": 87.192,
+        "min_goodput_mbps": 87.183,
+        "max_goodput_mbps": 87.204,
+        "median_elapsed_ms": 6157.362,
+        "median_repairs": 0
+      },
+      "udp": {
+        "runs": 3,
+        "median_goodput_mbps": 92.491,
+        "min_goodput_mbps": 92.209,
+        "max_goodput_mbps": 92.494,
+        "median_elapsed_ms": 5804.567,
+        "median_repairs": 0
+      }
+    }
+  }
+]

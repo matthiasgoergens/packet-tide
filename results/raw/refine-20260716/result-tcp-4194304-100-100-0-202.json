@@ -1,0 +1,1 @@
+{"transport":"tcp","bytes":4194304,"elapsed_ms":894.407,"goodput_mbps":37.516,"datagrams":0,"repairs":0,"scenario":{"file_bytes":4194304,"rate_mbit":100,"rtt_ms":100,"loss_percent":0,"seed":202},"verified":true}

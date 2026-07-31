@@ -1,0 +1,1 @@
+{"transport":"udp","bytes":67108864,"elapsed_ms":5804.357,"goodput_mbps":92.494,"datagrams":56776,"repairs":0,"scenario":{"file_bytes":67108864,"rate_mbit":100,"rtt_ms":100,"loss_percent":0,"seed":202},"verified":true}
