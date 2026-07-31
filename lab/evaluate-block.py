@@ -13,21 +13,35 @@ def psi(snapshot: dict, resource: str) -> float:
     return snapshot.get("pressure", {}).get(resource, {}).get("some", {}).get("avg10", 0.0)
 
 
+def busy_fraction(before: dict, after: dict) -> float:
+    before_ticks = before.get("cpu_ticks", {})
+    after_ticks = after.get("cpu_ticks", {})
+    deltas = {
+        key: after_ticks.get(key, 0) - value for key, value in before_ticks.items()
+    }
+    total = sum(deltas.values()) - deltas.get("guest", 0) - deltas.get("guest_nice", 0)
+    idle = deltas.get("idle", 0) + deltas.get("iowait", 0)
+    return 0.0 if total <= 0 else (total - idle) / total
+
+
 def main() -> None:
-    if len(sys.argv) != 3:
-        raise SystemExit("usage: evaluate-block.py RESULT_DIR BLOCK_ID")
+    if len(sys.argv) not in (4, 5):
+        raise SystemExit(
+            "usage: evaluate-block.py RESULT_DIR BLOCK_ID EXPECTED_TREATMENTS [FAILURE]"
+        )
 
     result_dir = Path(sys.argv[1])
     block_id = sys.argv[2]
+    expected = set(sys.argv[3].split(","))
     results = []
     for path in sorted(result_dir.glob("result-*.json")):
         result = json.loads(path.read_text())
         if result.get("design", {}).get("block_id") == block_id:
             results.append(result)
 
-    reasons = []
+    reasons = [sys.argv[4]] if len(sys.argv) == 5 else []
     transports = {result["transport"] for result in results}
-    if transports != {"udp", "tcp", "rsync"}:
+    if transports != expected:
         reasons.append(f"incomplete treatments: {sorted(transports)}")
     for result in results:
         transport = result["transport"]
@@ -48,6 +62,12 @@ def main() -> None:
                 reasons.append(f"{transport} {phase}: CPU PSI {cpu_psi:.2f}")
             if io_psi > MAX_IO_PSI:
                 reasons.append(f"{transport} {phase}: I/O PSI {io_psi:.2f}")
+        before = result.get("host", {}).get("before")
+        after = result.get("host", {}).get("after")
+        if before and after:
+            busy = busy_fraction(before, after)
+            if busy > 0.5:
+                reasons.append(f"{transport}: interval CPU busy {busy:.3f}")
 
     record = {
         "block_id": block_id,

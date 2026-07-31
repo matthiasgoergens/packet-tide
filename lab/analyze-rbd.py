@@ -57,10 +57,10 @@ def main() -> None:
         if block_id in quarantined or "udp" not in treatments:
             continue
         udp_elapsed = treatments["udp"]["elapsed_ms"]
-        for baseline in ("tcp", "rsync"):
-            if baseline in treatments:
+        for baseline, result in treatments.items():
+            if baseline != "udp":
                 grouped[scenarios[block_id]][baseline].append(
-                    treatments[baseline]["elapsed_ms"] / udp_elapsed
+                    result["elapsed_ms"] / udp_elapsed
                 )
 
     analysis = []

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -ne 6 ]]; then
-  echo "usage: $0 tcp|udp|rsync FILE_BYTES RATE_MBIT RTT_MS LOSS_PERCENT SEED" >&2
+  echo "usage: $0 TRANSPORT FILE_BYTES RATE_MBIT RTT_MS LOSS_PERCENT SEED" >&2
   exit 2
 fi
 
@@ -13,18 +13,31 @@ RTT_MS=$4
 LOSS_PERCENT=$5
 SEED=$6
 
-[[ $TRANSPORT == tcp || $TRANSPORT == udp || $TRANSPORT == rsync ]] || { echo "invalid transport" >&2; exit 2; }
+PROGRAM_TRANSPORT=$TRANSPORT
+TCP_CC=''
+case $TRANSPORT in
+  udp) ;;
+  tcp) PROGRAM_TRANSPORT=tcp ;;
+  tcp-cubic) PROGRAM_TRANSPORT=tcp; TCP_CC=cubic ;;
+  tcp-bbr) PROGRAM_TRANSPORT=tcp; TCP_CC=bbr ;;
+  tcp4) PROGRAM_TRANSPORT=tcp4 ;;
+  tcp4-cubic) PROGRAM_TRANSPORT=tcp4; TCP_CC=cubic ;;
+  tcp4-bbr) PROGRAM_TRANSPORT=tcp4; TCP_CC=bbr ;;
+  rsync) PROGRAM_TRANSPORT=rsync ;;
+  rsync-cubic) PROGRAM_TRANSPORT=rsync; TCP_CC=cubic ;;
+  rsync-bbr) PROGRAM_TRANSPORT=rsync; TCP_CC=bbr ;;
+  *) echo "invalid transport: $TRANSPORT" >&2; exit 2 ;;
+esac
 [[ $FILE_BYTES =~ ^[0-9]+$ ]] || { echo "invalid file size" >&2; exit 2; }
 
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 BINARY="$ROOT/target/release/tsunami-udp"
 DATA=/tmp/tsunami-udp-lab/data
 RESULTS=/tmp/tsunami-udp-lab/results
-SOURCE="$DATA/source-$FILE_BYTES.bin"
+SOURCE="$DATA/source-$FILE_BYTES-seed1.bin"
 OUTPUT="$DATA/output-$TRANSPORT.bin"
 RECEIVER_LOG="$RESULTS/receiver-$TRANSPORT.log"
 SENDER_JSON="$RESULTS/sender-$TRANSPORT.json"
-RESULT_JSON="$RESULTS/result-$TRANSPORT-$FILE_BYTES-$RATE_MBIT-$RTT_MS-$LOSS_PERCENT-$SEED.json"
 RSYNC_CONFIG="$DATA/rsyncd.conf"
 FORWARD_QDISC="$RESULTS/qdisc-forward-$TRANSPORT.json"
 REVERSE_QDISC="$RESULTS/qdisc-reverse-$TRANSPORT.json"
@@ -34,12 +47,21 @@ BLOCK_ID=${TSU_BLOCK_ID:-standalone-$FILE_BYTES-$RATE_MBIT-$RTT_MS-$LOSS_PERCENT
 BLOCK_ORDER=${TSU_BLOCK_ORDER:-0}
 TREATMENT_ORDER=${TSU_TREATMENT_ORDER:-0}
 RANDOMIZATION_SEED=${TSU_RANDOMIZATION_SEED:-0}
+EXPECTED_TREATMENTS=${TSU_EXPECTED_TREATMENTS:-$TRANSPORT}
+RESULT_JSON="$RESULTS/result-$BLOCK_ID-$TRANSPORT.json"
 
 mkdir -p "$DATA" "$RESULTS"
-truncate -s "$FILE_BYTES" "$SOURCE"
+if [[ ! -f $SOURCE ]] || [[ $(stat -c %s "$SOURCE") -ne $FILE_BYTES ]]; then
+  python3 "$ROOT/lab/generate-data.py" "$SOURCE" "$FILE_BYTES" 1
+fi
 rm -f "$OUTPUT" "$OUTPUT".part.* "$RECEIVER_LOG" "$SENDER_JSON"
 
-"$ROOT/lab/configure-network.sh" "$RATE_MBIT" "$RTT_MS" "$LOSS_PERCENT" 10000 "$SEED"
+"$ROOT/lab/configure-network.sh" "$RATE_MBIT" "$RTT_MS" "$LOSS_PERCENT" 10000 "$SEED" 0
+if [[ -n $TCP_CC ]]; then
+  ip netns exec tsu-bench-s sysctl -q -w net.ipv4.tcp_congestion_control="$TCP_CC"
+  ip netns exec tsu-bench-d sysctl -q -w net.ipv4.tcp_congestion_control="$TCP_CC"
+fi
+ACTUAL_TCP_CC=$(ip netns exec tsu-bench-s sysctl -n net.ipv4.tcp_congestion_control)
 REPAIR_COOLDOWN_MS=$(awk -v rtt="$RTT_MS" 'BEGIN { printf "%.0f", 2.0 * rtt + 50.0 }')
 python3 "$ROOT/lab/host-snapshot.py" >"$HOST_BEFORE"
 
@@ -52,7 +74,7 @@ cleanup_receiver() {
 }
 trap cleanup_receiver EXIT INT TERM
 
-if [[ $TRANSPORT == rsync ]]; then
+if [[ $PROGRAM_TRANSPORT == rsync ]]; then
   cat >"$RSYNC_CONFIG" <<EOF
 pid file = $DATA/rsyncd.pid
 use chroot = no
@@ -64,7 +86,7 @@ uid = $(id -u)
 gid = $(id -g)
 EOF
 
-  timeout --foreground 60s ip netns exec tsu-bench-d \
+  timeout --foreground 180s ip netns exec tsu-bench-d \
     rsync --daemon --no-detach --config="$RSYNC_CONFIG" --port=8873 \
     >"$RECEIVER_LOG" 2>&1 &
   receiver_pid=$!
@@ -97,7 +119,7 @@ EOF
   wait "$receiver_pid" 2>/dev/null || true
   receiver_pid=''
 else
-  timeout --foreground 60s ip netns exec tsu-bench-d \
+  timeout --foreground 180s ip netns exec tsu-bench-d \
     "$BINARY" receive \
     --listen 10.210.2.2:9000 \
     --udp 10.210.2.2:9001 \
@@ -111,12 +133,12 @@ else
     sleep 0.02
   done
 
-  timeout --foreground 60s ip netns exec tsu-bench-s \
+  timeout --foreground 180s ip netns exec tsu-bench-s \
     "$BINARY" send \
     --connect 10.210.2.2:9000 \
     --udp-target 10.210.2.2:9001 \
     --file "$SOURCE" \
-    --transport "$TRANSPORT" \
+    --transport "$PROGRAM_TRANSPORT" \
     --rate-mbps "$RATE_MBIT" \
     --repair-cooldown-ms "$REPAIR_COOLDOWN_MS" >"$SENDER_JSON"
 
@@ -134,6 +156,9 @@ jq -c \
   --argjson rate_mbit "$RATE_MBIT" \
   --argjson rtt_ms "$RTT_MS" \
   --argjson loss_percent "$LOSS_PERCENT" \
+  --arg transport "$TRANSPORT" \
+  --arg tcp_cc "$ACTUAL_TCP_CC" \
+  --arg expected_treatments "$EXPECTED_TREATMENTS" \
   --argjson seed "$SEED" \
   --arg block_id "$BLOCK_ID" \
   --argjson block_order "$BLOCK_ORDER" \
@@ -144,27 +169,34 @@ jq -c \
   --slurpfile host_before "$HOST_BEFORE" \
   --slurpfile host_after "$HOST_AFTER" \
   '. + {
+    transport: $transport,
+    tcp_congestion_control: $tcp_cc,
     scenario: {
       file_bytes: $file_bytes,
       rate_mbit: $rate_mbit,
       rtt_ms: $rtt_ms,
       loss_percent: $loss_percent,
+      reverse_loss_percent: 0,
       seed: $seed
     },
     network: {
       forward_qdisc: $forward_qdisc[0],
-      reverse_qdisc: $reverse_qdisc[0]
+      reverse_qdisc: $reverse_qdisc[0],
+      forward_bytes: ($forward_qdisc[0][0].bytes // null),
+      reverse_bytes: ($reverse_qdisc[0][0].bytes // null)
     },
     design: {
       block_id: $block_id,
       block_order: $block_order,
       treatment_order: $treatment_order,
-      randomization_seed: $randomization_seed
+      randomization_seed: $randomization_seed,
+      expected_treatments: ($expected_treatments | split(","))
     },
     host: {
       before: $host_before[0],
       after: $host_after[0]
     },
+    input: {pattern: "python-mt19937", seed: 1},
     verified: true
   }' "$SENDER_JSON" >"$RESULT_JSON.tmp"
 mv "$RESULT_JSON.tmp" "$RESULT_JSON"

@@ -14,6 +14,8 @@ cleanup() {
 cleanup
 trap cleanup ERR INT TERM
 
+modprobe tcp_bbr
+
 ip netns add "$SENDER_NS"
 ip netns add "$ROUTER_NS"
 ip netns add "$RECEIVER_NS"
@@ -37,6 +39,7 @@ ip -n "$SENDER_NS" link set tsu-s0 up
 ip -n "$ROUTER_NS" link set tsu-left0 up
 ip -n "$ROUTER_NS" link set tsu-right0 up
 ip -n "$RECEIVER_NS" link set tsu-d0 up
+ip netns exec "$SENDER_NS" tc qdisc replace dev tsu-s0 root fq
 
 # Keep virtual offload aggregation at the path MTU so netem loss acts on
 # wire-sized packets rather than a large GSO/GRO super-packet. This uses only

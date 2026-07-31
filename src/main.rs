@@ -17,12 +17,14 @@ const HEADER_SIZE: usize = 18;
 const PAYLOAD_SIZE: usize = DATAGRAM_SIZE - HEADER_SIZE;
 const REPORT_INTERVAL: Duration = Duration::from_millis(50);
 const MAX_RANGES_PER_REPORT: usize = 512;
+const TCP4_LANES: usize = 4;
 
 type AnyResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Transport {
     Tcp,
+    Tcp4,
     Udp,
 }
 
@@ -30,14 +32,16 @@ impl Transport {
     fn parse(value: &str) -> AnyResult<Self> {
         match value {
             "tcp" => Ok(Self::Tcp),
+            "tcp4" => Ok(Self::Tcp4),
             "udp" => Ok(Self::Udp),
-            _ => Err(format!("unknown transport {value:?}; expected tcp or udp").into()),
+            _ => Err(format!("unknown transport {value:?}; expected tcp, tcp4, or udp").into()),
         }
     }
 
     fn wire_name(self) -> &'static str {
         match self {
             Self::Tcp => "TCP",
+            Self::Tcp4 => "TCP4",
             Self::Udp => "UDP",
         }
     }
@@ -45,6 +49,7 @@ impl Transport {
     fn display_name(self) -> &'static str {
         match self {
             Self::Tcp => "tcp",
+            Self::Tcp4 => "tcp4",
             Self::Udp => "udp",
         }
     }
@@ -90,7 +95,7 @@ fn usage() {
     eprintln!(
         "usage:\n  tsunami-udp receive --listen ADDR --udp ADDR --out PATH\n  \
          tsunami-udp send --connect ADDR --udp-target ADDR --file PATH \
-         --transport tcp|udp [--rate-mbps N] [--repair-cooldown-ms N]"
+         --transport tcp|tcp4|udp [--rate-mbps N] [--repair-cooldown-ms N]"
     );
 }
 
@@ -163,11 +168,16 @@ fn send(args: SendArgs) -> AnyResult<()> {
     }
 
     let started = Instant::now();
-    let (datagrams, repairs) = match args.transport {
+    let (datagrams, repairs, udp_ip_bytes_offered) = match args.transport {
         Transport::Tcp => {
             send_tcp(&args.file, &mut control)?;
             expect_completion(control.try_clone()?)?;
-            (0, 0)
+            (0, 0, 0)
+        }
+        Transport::Tcp4 => {
+            send_tcp4(&args.file, args.connect, session)?;
+            expect_completion(control.try_clone()?)?;
+            (0, 0, 0)
         }
         Transport::Udp => {
             let config = UdpSendConfig {
@@ -190,13 +200,15 @@ fn send(args: SendArgs) -> AnyResult<()> {
     };
     println!(
         "{{\"transport\":\"{}\",\"bytes\":{},\"elapsed_ms\":{:.3},\
-         \"goodput_mbps\":{:.3},\"datagrams\":{},\"repairs\":{}}}",
+         \"goodput_mbps\":{:.3},\"datagrams\":{},\"repairs\":{},\
+         \"udp_ip_bytes_offered\":{}}}",
         args.transport.display_name(),
         size,
         elapsed.as_secs_f64() * 1000.0,
         goodput_mbps,
         datagrams,
-        repairs
+        repairs,
+        udp_ip_bytes_offered
     );
     Ok(())
 }
@@ -225,6 +237,58 @@ fn send_tcp(path: &Path, control: &mut TcpStream) -> AnyResult<()> {
     Ok(())
 }
 
+fn send_tcp4(path: &Path, connect: SocketAddr, session: u64) -> AnyResult<()> {
+    let size = fs::metadata(path)?.len();
+    let mut lanes = Vec::with_capacity(TCP4_LANES);
+    for lane in 0..TCP4_LANES {
+        let mut stream = TcpStream::connect(connect)?;
+        stream.set_nodelay(true)?;
+        writeln!(stream, "TSU1D {session} {lane}")?;
+        stream.flush()?;
+        lanes.push((lane, stream));
+    }
+
+    let mut workers = Vec::with_capacity(TCP4_LANES);
+    for (lane, stream) in lanes {
+        let path = path.to_owned();
+        let (start, end) = tcp4_lane_range(size, lane);
+        workers.push(thread::spawn(move || {
+            send_tcp_range(&path, stream, start, end)
+        }));
+    }
+    for worker in workers {
+        worker.join().map_err(|_| "TCP4 sender thread panicked")??;
+    }
+    Ok(())
+}
+
+fn send_tcp_range(path: &Path, mut stream: TcpStream, start: u64, end: u64) -> AnyResult<()> {
+    let file = File::open(path)?;
+    let mut offset = start;
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    while offset < end {
+        let wanted = (end - offset).min(buffer.len() as u64) as usize;
+        let count = file.read_at(&mut buffer[..wanted], offset)?;
+        if count == 0 {
+            return Err("unexpected EOF while sending TCP4 range".into());
+        }
+        stream.write_all(&buffer[..count])?;
+        offset += count as u64;
+    }
+    stream.flush()?;
+    Ok(())
+}
+
+fn tcp4_lane_range(size: u64, lane: usize) -> (u64, u64) {
+    debug_assert!(lane < TCP4_LANES);
+    let lanes = TCP4_LANES as u64;
+    let base = size / lanes;
+    let remainder = size % lanes;
+    let start = base * lane as u64 + remainder.min(lane as u64);
+    let length = base + if (lane as u64) < remainder { 1 } else { 0 };
+    (start, start + length)
+}
+
 struct UdpSendConfig {
     size: u64,
     session: u64,
@@ -234,7 +298,11 @@ struct UdpSendConfig {
     repair_cooldown: Duration,
 }
 
-fn send_udp(path: &Path, config: &UdpSendConfig, control: &mut TcpStream) -> AnyResult<(u64, u64)> {
+fn send_udp(
+    path: &Path,
+    config: &UdpSendConfig,
+    control: &mut TcpStream,
+) -> AnyResult<(u64, u64, u64)> {
     if !config.rate_mbps.is_finite() || config.rate_mbps <= 0.0 {
         return Err("--rate-mbps must be positive and finite".into());
     }
@@ -266,12 +334,14 @@ fn send_udp(path: &Path, config: &UdpSendConfig, control: &mut TcpStream) -> Any
     let mut packet = vec![0_u8; DATAGRAM_SIZE];
     let mut datagrams = 0_u64;
     let mut repairs = 0_u64;
+    let mut udp_ip_bytes_offered = 0_u64;
 
     for sequence in 0..config.chunks {
         let packet_len = build_packet(&file, config.size, config.session, sequence, &mut packet)?;
         socket.send(&packet[..packet_len])?;
         datagrams += 1;
-        pacer.account_and_wait(packet_len);
+        udp_ip_bytes_offered += packet_len as u64 + 28;
+        pacer.account_and_wait(packet_len + 28);
 
         if sequence % 16 == 15 {
             for repair in take_repairs(&pending, 4) {
@@ -280,7 +350,8 @@ fn send_udp(path: &Path, config: &UdpSendConfig, control: &mut TcpStream) -> Any
                 socket.send(&packet[..packet_len])?;
                 datagrams += 1;
                 repairs += 1;
-                pacer.account_and_wait(packet_len);
+                udp_ip_bytes_offered += packet_len as u64 + 28;
+                pacer.account_and_wait(packet_len + 28);
             }
         }
     }
@@ -307,14 +378,15 @@ fn send_udp(path: &Path, config: &UdpSendConfig, control: &mut TcpStream) -> Any
             socket.send(&packet[..packet_len])?;
             datagrams += 1;
             repairs += 1;
-            pacer.account_and_wait(packet_len);
+            udp_ip_bytes_offered += packet_len as u64 + 28;
+            pacer.account_and_wait(packet_len + 28);
         }
     }
 
     feedback_thread
         .join()
         .map_err(|_| "feedback thread panicked")?;
-    Ok((datagrams, repairs))
+    Ok((datagrams, repairs, udp_ip_bytes_offered))
 }
 
 struct RepairQueue {
@@ -477,6 +549,7 @@ fn receive(args: ReceiveArgs) -> AnyResult<()> {
     let temporary = temporary_path(&args.out);
     let result = match hello.transport {
         Transport::Tcp => receive_tcp(&mut control, &temporary, &args.out, &hello),
+        Transport::Tcp4 => receive_tcp4(&listener, &mut control, &temporary, &args.out, &hello),
         Transport::Udp => receive_udp(control, udp, &temporary, &args.out, &hello),
     };
     if let Err(error) = &result {
@@ -501,6 +574,7 @@ fn parse_hello(line: &str) -> AnyResult<Hello> {
     }
     let transport = match parts[1] {
         "TCP" => Transport::Tcp,
+        "TCP4" => Transport::Tcp4,
         "UDP" => Transport::Udp,
         _ => return Err("invalid transport in greeting".into()),
     };
@@ -547,6 +621,97 @@ fn receive_tcp(
     install_file(temporary, destination)?;
     control.write_all(b"COMPLETE\n")?;
     control.flush()?;
+    Ok(())
+}
+
+fn receive_tcp4(
+    listener: &TcpListener,
+    control: &mut TcpStream,
+    temporary: &Path,
+    destination: &Path,
+    hello: &Hello,
+) -> AnyResult<()> {
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .read(true)
+        .write(true)
+        .open(temporary)?;
+    file.set_len(hello.size)?;
+
+    let mut lanes: Vec<Option<TcpStream>> = (0..TCP4_LANES).map(|_| None).collect();
+    for _ in 0..TCP4_LANES {
+        let (mut stream, _) = listener.accept()?;
+        stream.set_nodelay(true)?;
+        let (session, lane) = read_tcp4_hello(&mut stream)?;
+        if session != hello.session || lane >= TCP4_LANES || lanes[lane].is_some() {
+            return Err("invalid or duplicate TCP4 data connection".into());
+        }
+        lanes[lane] = Some(stream);
+    }
+
+    let mut workers = Vec::with_capacity(TCP4_LANES);
+    for (lane, stream) in lanes.into_iter().enumerate() {
+        let stream = stream.ok_or("missing TCP4 data connection")?;
+        let file = file.try_clone()?;
+        let (start, end) = tcp4_lane_range(hello.size, lane);
+        workers.push(thread::spawn(move || {
+            receive_tcp4_range(stream, file, start, end)
+        }));
+    }
+    for worker in workers {
+        worker
+            .join()
+            .map_err(|_| "TCP4 receiver thread panicked")??;
+    }
+
+    file.sync_all()?;
+    let actual_hash = hash_file(temporary)?;
+    if actual_hash != hello.hash {
+        control.write_all(b"ERROR hash-mismatch\n")?;
+        return Err("received TCP4 file hash did not match".into());
+    }
+    install_file(temporary, destination)?;
+    control.write_all(b"COMPLETE\n")?;
+    control.flush()?;
+    Ok(())
+}
+
+fn read_tcp4_hello(stream: &mut TcpStream) -> AnyResult<(u64, usize)> {
+    let mut greeting = Vec::with_capacity(64);
+    while greeting.len() < 128 {
+        let mut byte = [0_u8; 1];
+        if stream.read(&mut byte)? == 0 {
+            return Err("TCP4 data connection ended before its greeting".into());
+        }
+        if byte[0] == b'\n' {
+            break;
+        }
+        greeting.push(byte[0]);
+    }
+    if greeting.len() == 128 {
+        return Err("TCP4 data greeting is too long".into());
+    }
+    let greeting = std::str::from_utf8(&greeting)?;
+    let parts: Vec<_> = greeting.split_whitespace().collect();
+    if parts.len() != 3 || parts[0] != "TSU1D" {
+        return Err("invalid TCP4 data greeting".into());
+    }
+    Ok((parts[1].parse()?, parts[2].parse()?))
+}
+
+fn receive_tcp4_range(mut stream: TcpStream, file: File, start: u64, end: u64) -> AnyResult<()> {
+    let mut offset = start;
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    while offset < end {
+        let wanted = (end - offset).min(buffer.len() as u64) as usize;
+        let count = stream.read(&mut buffer[..wanted])?;
+        if count == 0 {
+            return Err("TCP4 data ended before its complete range arrived".into());
+        }
+        write_all_at(&file, &buffer[..count], offset)?;
+        offset += count as u64;
+    }
     Ok(())
 }
 
@@ -805,5 +970,20 @@ mod tests {
         assert_eq!(parse_range("7").unwrap(), (7, 7));
         assert_eq!(parse_range("7-11").unwrap(), (7, 11));
         assert!(parse_range("11-7").is_err());
+    }
+
+    #[test]
+    fn tcp4_ranges_are_contiguous_and_cover_the_file() {
+        let size = 11;
+        let ranges: Vec<_> = (0..TCP4_LANES)
+            .map(|lane| tcp4_lane_range(size, lane))
+            .collect();
+        assert_eq!(ranges, vec![(0, 3), (3, 6), (6, 9), (9, 11)]);
+    }
+
+    #[test]
+    fn tcp4_transport_round_trips_through_the_wire_name() {
+        assert_eq!(Transport::parse("tcp4").unwrap(), Transport::Tcp4);
+        assert_eq!(Transport::Tcp4.wire_name(), "TCP4");
     }
 }
