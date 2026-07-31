@@ -12,6 +12,11 @@ RATE_MBIT=$3
 RTT_MS=$4
 LOSS_PERCENT=$5
 SEED=$6
+QUEUE_PACKETS=${TSU_QUEUE_PACKETS:-10000}
+SEND_RATE_MBIT=${TSU_SEND_RATE_MBIT:-$RATE_MBIT}
+FORWARD_JITTER_MS=${TSU_FORWARD_JITTER_MS:-0}
+FORWARD_DUPLICATE_PERCENT=${TSU_FORWARD_DUPLICATE_PERCENT:-0}
+FORWARD_REORDER_PERCENT=${TSU_FORWARD_REORDER_PERCENT:-0}
 
 PROGRAM_TRANSPORT=$TRANSPORT
 TCP_CC=''
@@ -56,7 +61,9 @@ if [[ ! -f $SOURCE ]] || [[ $(stat -c %s "$SOURCE") -ne $FILE_BYTES ]]; then
 fi
 rm -f "$OUTPUT" "$OUTPUT".part "$OUTPUT".part.* "$RECEIVER_LOG" "$SENDER_JSON"
 
-"$ROOT/lab/configure-network.sh" "$RATE_MBIT" "$RTT_MS" "$LOSS_PERCENT" 10000 "$SEED" 0
+"$ROOT/lab/configure-network.sh" \
+  "$RATE_MBIT" "$RTT_MS" "$LOSS_PERCENT" "$QUEUE_PACKETS" "$SEED" 0 \
+  "$FORWARD_JITTER_MS" "$FORWARD_DUPLICATE_PERCENT" "$FORWARD_REORDER_PERCENT"
 if [[ -n $TCP_CC ]]; then
   ip netns exec tsu-bench-s sysctl -q -w net.ipv4.tcp_congestion_control="$TCP_CC"
   ip netns exec tsu-bench-d sysctl -q -w net.ipv4.tcp_congestion_control="$TCP_CC"
@@ -139,7 +146,7 @@ else
     --udp-target 10.210.2.2:9001 \
     --file "$SOURCE" \
     --transport "$PROGRAM_TRANSPORT" \
-    --rate-mbps "$RATE_MBIT" \
+    --rate-mbps "$SEND_RATE_MBIT" \
     --repair-cooldown-ms "$REPAIR_COOLDOWN_MS" >"$SENDER_JSON"
 
   wait "$receiver_pid"
@@ -156,6 +163,11 @@ jq -c \
   --argjson rate_mbit "$RATE_MBIT" \
   --argjson rtt_ms "$RTT_MS" \
   --argjson loss_percent "$LOSS_PERCENT" \
+  --argjson send_rate_mbit "$SEND_RATE_MBIT" \
+  --argjson queue_packets "$QUEUE_PACKETS" \
+  --argjson forward_jitter_ms "$FORWARD_JITTER_MS" \
+  --argjson forward_duplicate_percent "$FORWARD_DUPLICATE_PERCENT" \
+  --argjson forward_reorder_percent "$FORWARD_REORDER_PERCENT" \
   --arg transport "$TRANSPORT" \
   --arg tcp_cc "$ACTUAL_TCP_CC" \
   --arg expected_treatments "$EXPECTED_TREATMENTS" \
@@ -177,6 +189,11 @@ jq -c \
       rtt_ms: $rtt_ms,
       loss_percent: $loss_percent,
       reverse_loss_percent: 0,
+      send_rate_mbit: $send_rate_mbit,
+      queue_packets: $queue_packets,
+      forward_jitter_ms: $forward_jitter_ms,
+      forward_duplicate_percent: $forward_duplicate_percent,
+      forward_reorder_percent: $forward_reorder_percent,
       seed: $seed
     },
     network: {
