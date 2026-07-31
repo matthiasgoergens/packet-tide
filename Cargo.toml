@@ -1,0 +1,13 @@
+[package]
+name = "tsunami-udp"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Experimental object-oriented file transfer over TCP and UDP"
+
+[dependencies]
+sha2 = "0.10"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
