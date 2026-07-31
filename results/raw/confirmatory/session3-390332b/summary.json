@@ -1,0 +1,122 @@
+[
+  {
+    "file_bytes": 16777216,
+    "rate_mbit": 100,
+    "rtt_ms": 20,
+    "loss_percent": 0,
+    "transports": {
+      "tcp-bbr": {
+        "runs": 3,
+        "median_goodput_mbps": 90.742,
+        "min_goodput_mbps": 90.729,
+        "max_goodput_mbps": 90.757,
+        "median_elapsed_ms": 1479.114,
+        "median_repairs": 0
+      },
+      "tcp-cubic": {
+        "runs": 3,
+        "median_goodput_mbps": 91.364,
+        "min_goodput_mbps": 91.33,
+        "max_goodput_mbps": 91.365,
+        "median_elapsed_ms": 1469.039,
+        "median_repairs": 0
+      },
+      "tcp4-cubic": {
+        "runs": 3,
+        "median_goodput_mbps": 86.485,
+        "min_goodput_mbps": 85.888,
+        "max_goodput_mbps": 87.123,
+        "median_elapsed_ms": 1551.92,
+        "median_repairs": 0
+      },
+      "udp": {
+        "runs": 3,
+        "median_goodput_mbps": 91.269,
+        "min_goodput_mbps": 90.639,
+        "max_goodput_mbps": 91.577,
+        "median_elapsed_ms": 1470.565,
+        "median_repairs": 0
+      }
+    }
+  },
+  {
+    "file_bytes": 16777216,
+    "rate_mbit": 100,
+    "rtt_ms": 100,
+    "loss_percent": 0.3,
+    "transports": {
+      "tcp-bbr": {
+        "runs": 4,
+        "median_goodput_mbps": 57.442499999999995,
+        "min_goodput_mbps": 48.688,
+        "max_goodput_mbps": 60.395,
+        "median_elapsed_ms": 2341.3225,
+        "median_repairs": 0.0
+      },
+      "tcp-cubic": {
+        "runs": 4,
+        "median_goodput_mbps": 3.1275,
+        "min_goodput_mbps": 2.286,
+        "max_goodput_mbps": 3.815,
+        "median_elapsed_ms": 45012.282999999996,
+        "median_repairs": 0.0
+      },
+      "tcp4-cubic": {
+        "runs": 4,
+        "median_goodput_mbps": 14.366,
+        "min_goodput_mbps": 7.499,
+        "max_goodput_mbps": 21.609,
+        "median_elapsed_ms": 9512.486499999999,
+        "median_repairs": 0.0
+      },
+      "udp": {
+        "runs": 4,
+        "median_goodput_mbps": 82.234,
+        "min_goodput_mbps": 81.771,
+        "max_goodput_mbps": 87.404,
+        "median_elapsed_ms": 1632.143,
+        "median_repairs": 45.5
+      }
+    }
+  },
+  {
+    "file_bytes": 16777216,
+    "rate_mbit": 100,
+    "rtt_ms": 100,
+    "loss_percent": 1,
+    "transports": {
+      "tcp-bbr": {
+        "runs": 4,
+        "median_goodput_mbps": 53.0815,
+        "min_goodput_mbps": 35.9,
+        "max_goodput_mbps": 54.133,
+        "median_elapsed_ms": 2529.467,
+        "median_repairs": 0.0
+      },
+      "tcp-cubic": {
+        "runs": 4,
+        "median_goodput_mbps": 1.3655,
+        "min_goodput_mbps": 1.206,
+        "max_goodput_mbps": 1.532,
+        "median_elapsed_ms": 98364.2695,
+        "median_repairs": 0.0
+      },
+      "tcp4-cubic": {
+        "runs": 4,
+        "median_goodput_mbps": 5.07,
+        "min_goodput_mbps": 4.233,
+        "max_goodput_mbps": 5.942,
+        "median_elapsed_ms": 26489.461000000003,
+        "median_repairs": 0.0
+      },
+      "udp": {
+        "runs": 4,
+        "median_goodput_mbps": 81.91749999999999,
+        "min_goodput_mbps": 81.605,
+        "max_goodput_mbps": 82.042,
+        "median_elapsed_ms": 1638.455,
+        "median_repairs": 143.0
+      }
+    }
+  }
+]

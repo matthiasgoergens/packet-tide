@@ -1,0 +1,72 @@
+{
+  "analysis": "2026-07-31-confirmatory-plan",
+  "bootstrap": {
+    "confidence": "one-sided 95%",
+    "replicates": 10000,
+    "seed": 0,
+    "stratification": "session"
+  },
+  "conditions": {
+    "clean_guardrail": {
+      "accepted_complete_blocks": 11,
+      "decision": "pass",
+      "estimand": "geometric_mean(udp_time / best_tcp_time)",
+      "estimate": 1.0033015343115004,
+      "minimum_blocks_required": 10,
+      "one_sided_95pct": {
+        "lower": 1.0011377849797063,
+        "upper": 1.005504724319334
+      },
+      "sessions": {
+        "/Users/matthias/Documents/tsunami-udp/results/raw/confirmatory/session1-390332b": 4,
+        "/Users/matthias/Documents/tsunami-udp/results/raw/confirmatory/session2-390332b": 4,
+        "/Users/matthias/Documents/tsunami-udp/results/raw/confirmatory/session3-390332b": 3
+      },
+      "threshold": 1.05
+    },
+    "primary_advantage": {
+      "accepted_complete_blocks": 12,
+      "decision": "pass",
+      "estimand": "geometric_mean(best_tcp_time / udp_time)",
+      "estimate": 1.4088144542902206,
+      "minimum_blocks_required": 10,
+      "one_sided_95pct": {
+        "lower": 1.373305164109738,
+        "upper": 1.4477060399444461
+      },
+      "sessions": {
+        "/Users/matthias/Documents/tsunami-udp/results/raw/confirmatory/session1-390332b": 4,
+        "/Users/matthias/Documents/tsunami-udp/results/raw/confirmatory/session2-390332b": 4,
+        "/Users/matthias/Documents/tsunami-udp/results/raw/confirmatory/session3-390332b": 4
+      },
+      "threshold": 1.25
+    },
+    "repair_guardrail": {
+      "accepted_complete_blocks": 11,
+      "decision": "pass",
+      "estimand": "mean(udp_ip_bytes_offered / source_bytes - 1)",
+      "estimate": 0.0498099760575728,
+      "minimum_blocks_required": 10,
+      "one_sided_95pct": {
+        "lower": 0.04929096048528498,
+        "upper": 0.050315683538263496
+      },
+      "sessions": {
+        "/Users/matthias/Documents/tsunami-udp/results/raw/confirmatory/session1-390332b": 3,
+        "/Users/matthias/Documents/tsunami-udp/results/raw/confirmatory/session2-390332b": 4,
+        "/Users/matthias/Documents/tsunami-udp/results/raw/confirmatory/session3-390332b": 4
+      },
+      "threshold": 0.1
+    }
+  },
+  "correctness": {
+    "decision": "pass",
+    "udp_accepted_block_failures": []
+  },
+  "quality": {
+    "accepted_status_blocks": 34,
+    "excluded_accepted_blocks": [],
+    "quarantined_blocks": 2
+  },
+  "v0_1_performance_goal": "pass"
+}
