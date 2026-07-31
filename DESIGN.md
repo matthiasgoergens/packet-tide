@@ -106,6 +106,7 @@ Each data packet contains at least:
 - protocol version and packet type;
 - session ID;
 - chunk number;
+- packet kind (original or repair);
 - payload length;
 - payload bytes.
 
@@ -133,8 +134,8 @@ trusted. Checkpoints occur at most once per second, while live missing reports c
 remain more frequent.
 
 Memory has explicit ceilings. Each endpoint rejects objects requiring more than a
-64 MiB receipt bitmap: 536,870,912 chunks, or about 591 GiB with the current
-1,182-byte payload. The sender's queued-repair set and cooldown cache are each
+64 MiB receipt bitmap: 536,870,912 chunks, or about 590.5 GiB with the current
+1,181-byte payload. The sender's queued-repair set and cooldown cache are each
 capped at 65,536 chunk entries. Repeated cumulative reports refill a capped queue,
 so dropping excess advisory entries affects latency rather than correctness.
 
@@ -151,13 +152,16 @@ across messages or represented as bitmap windows. Reports are cumulative enough
 that losing or superseding one never makes correctness depend on it.
 
 The newest observed sequence is not immediately eligible for a missing report.
-The receiver retains a small time history of the frontier and reports holes only
-below a frontier that has remained behind the negotiated grace interval. After
-the sender's `END`, the receiver likewise waits out that grace before declaring
-tail holes. This prevents ordinary reordering from being mistaken for loss while
-adding only a bounded delay to genuine repair. The baseline uses the sender's
-existing `2 * RTT + 50 ms` repair cooldown to deduplicate repairs and half of that
-value (never below one report interval) as the hole grace.
+The receiver retains a small time history of the frontier. Reports initially use
+the newest frontier at the normal 50 ms reporting cadence. If a new unique original
+packet arrives below the frontier, the receiver has observed path reordering and
+activates the longer negotiated grace. An explicit packet-kind field ensures late
+repair packets are not misclassified as path reordering. After the sender's `END`, the receiver
+likewise waits out the active grace
+before declaring tail holes. This prevents ordinary reordering from being mistaken
+for loss without always charging genuine loss the full delay. The baseline uses
+the sender's existing `2 * RTT + 50 ms` repair cooldown to deduplicate repairs and
+half of that value (never below one report interval) as the maximum hole grace.
 
 ### Sender behavior
 

@@ -17,7 +17,7 @@ mod resume;
 use resume::ResumeState;
 
 const DATAGRAM_SIZE: usize = 1200;
-const HEADER_SIZE: usize = 18;
+const HEADER_SIZE: usize = 19;
 const PAYLOAD_SIZE: usize = DATAGRAM_SIZE - HEADER_SIZE;
 const REPORT_INTERVAL: Duration = Duration::from_millis(50);
 const MAX_RANGES_PER_REPORT: usize = 512;
@@ -426,7 +426,14 @@ fn send_udp(
         if bitmap_contains(&config.durable_chunks, sequence) {
             continue;
         }
-        let packet_len = build_packet(&file, config.size, config.session, sequence, &mut packet)?;
+        let packet_len = build_packet(
+            &file,
+            config.size,
+            config.session,
+            sequence,
+            false,
+            &mut packet,
+        )?;
         socket.send(&packet[..packet_len])?;
         datagrams += 1;
         udp_ip_bytes_offered += packet_len as u64 + 28;
@@ -434,8 +441,14 @@ fn send_udp(
 
         if sequence % 16 == 15 {
             for repair in take_repairs(&pending, 4) {
-                let packet_len =
-                    build_packet(&file, config.size, config.session, repair, &mut packet)?;
+                let packet_len = build_packet(
+                    &file,
+                    config.size,
+                    config.session,
+                    repair,
+                    true,
+                    &mut packet,
+                )?;
                 socket.send(&packet[..packet_len])?;
                 datagrams += 1;
                 repairs += 1;
@@ -463,7 +476,14 @@ fn send_udp(
             continue;
         }
         for repair in repairs_now {
-            let packet_len = build_packet(&file, config.size, config.session, repair, &mut packet)?;
+            let packet_len = build_packet(
+                &file,
+                config.size,
+                config.session,
+                repair,
+                true,
+                &mut packet,
+            )?;
             socket.send(&packet[..packet_len])?;
             datagrams += 1;
             repairs += 1;
@@ -583,6 +603,7 @@ fn build_packet(
     size: u64,
     session: u64,
     sequence: u64,
+    repair: bool,
     packet: &mut [u8],
 ) -> AnyResult<usize> {
     let offset = sequence
@@ -594,7 +615,8 @@ fn build_packet(
     let payload_len = (size.saturating_sub(offset)).min(PAYLOAD_SIZE as u64) as usize;
     packet[0..8].copy_from_slice(&session.to_be_bytes());
     packet[8..16].copy_from_slice(&sequence.to_be_bytes());
-    packet[16..18].copy_from_slice(&(payload_len as u16).to_be_bytes());
+    packet[16] = u8::from(repair);
+    packet[17..19].copy_from_slice(&(payload_len as u16).to_be_bytes());
     let mut read = 0;
     while read < payload_len {
         let count = file.read_at(
@@ -866,6 +888,7 @@ fn receive_udp(
     let mut highest = highest_received(&state.bitmap);
     let mut ended = false;
     let mut ended_at = None::<Instant>;
+    let mut reordering_observed = false;
     let mut last_report = Instant::now();
     let mut frontier_history = VecDeque::new();
     frontier_history.push_back((Instant::now(), highest.map_or(0, |value| value + 1)));
@@ -906,7 +929,12 @@ fn receive_udp(
                     continue;
                 }
                 let sequence = u64::from_be_bytes(packet[8..16].try_into()?);
-                let payload_len = u16::from_be_bytes(packet[16..18].try_into()?) as usize;
+                let repair = match packet[16] {
+                    0 => false,
+                    1 => true,
+                    _ => continue,
+                };
+                let payload_len = u16::from_be_bytes(packet[17..19].try_into()?) as usize;
                 if sequence >= hello.chunks
                     || payload_len > PAYLOAD_SIZE
                     || count != HEADER_SIZE + payload_len
@@ -920,6 +948,9 @@ fn receive_udp(
                     continue;
                 }
                 if !bitmap_contains(&state.bitmap, sequence) {
+                    if !repair && highest.is_some_and(|frontier| sequence < frontier) {
+                        reordering_observed = true;
+                    }
                     write_all_at(
                         &file,
                         &packet[HEADER_SIZE..HEADER_SIZE + payload_len],
@@ -987,14 +1018,20 @@ fn receive_udp(
 
         if last_report.elapsed() >= REPORT_INTERVAL {
             let now = Instant::now();
+            let active_grace = if reordering_observed {
+                hello.repair_grace
+            } else {
+                Duration::ZERO
+            };
             let mature_end = mature_frontier(
                 &mut frontier_history,
                 now,
                 highest.map_or(0, |value| value + 1),
+                active_grace,
                 hello.repair_grace,
             );
             let report_end = if ended
-                && ended_at.is_some_and(|value| now.duration_since(value) >= hello.repair_grace)
+                && ended_at.is_some_and(|value| now.duration_since(value) >= active_grace)
             {
                 hello.chunks
             } else {
@@ -1038,17 +1075,24 @@ fn mature_frontier(
     now: Instant,
     current: u64,
     grace: Duration,
+    retention: Duration,
 ) -> u64 {
     if history.back().is_none_or(|(_, value)| *value != current) {
         history.push_back((now, current));
     }
     let cutoff = now.checked_sub(grace).unwrap_or(now);
-    while history.len() > 1 && history.get(1).is_some_and(|(seen, _)| *seen <= cutoff) {
+    let retention_cutoff = now.checked_sub(retention).unwrap_or(now);
+    while history.len() > 1
+        && history
+            .get(1)
+            .is_some_and(|(seen, _)| *seen <= retention_cutoff)
+    {
         history.pop_front();
     }
     history
-        .front()
-        .filter(|(seen, _)| *seen <= cutoff)
+        .iter()
+        .rev()
+        .find(|(seen, _)| *seen <= cutoff)
         .map_or(0, |(_, value)| *value)
 }
 
@@ -1185,6 +1229,23 @@ mod tests {
     }
 
     #[test]
+    fn packet_kind_distinguishes_originals_and_repairs() {
+        let path =
+            std::env::temp_dir().join(format!("tsunami-udp-packet-kind-{}", std::process::id()));
+        fs::write(&path, b"payload").unwrap();
+        let file = File::open(&path).unwrap();
+        let mut packet = vec![0_u8; DATAGRAM_SIZE];
+        let original = build_packet(&file, 7, 9, 0, false, &mut packet).unwrap();
+        assert_eq!(packet[16], 0);
+        assert_eq!(u16::from_be_bytes(packet[17..19].try_into().unwrap()), 7);
+        assert_eq!(original, HEADER_SIZE + 7);
+        let repair = build_packet(&file, 7, 9, 0, true, &mut packet).unwrap();
+        assert_eq!(packet[16], 1);
+        assert_eq!(repair, original);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn repair_queue_has_a_hard_entry_limit() {
         let mut queue = RepairQueue::new(Duration::from_secs(60));
         enqueue_repairs(&mut queue, "0-999999", 1_000_000).unwrap();
@@ -1211,20 +1272,92 @@ mod tests {
         let grace = Duration::from_millis(100);
         let mut history = VecDeque::from([(base, 0)]);
         assert_eq!(
-            mature_frontier(&mut history, base + Duration::from_millis(50), 100, grace),
+            mature_frontier(
+                &mut history,
+                base + Duration::from_millis(50),
+                100,
+                grace,
+                grace,
+            ),
             0
         );
         assert_eq!(
-            mature_frontier(&mut history, base + Duration::from_millis(120), 200, grace),
+            mature_frontier(
+                &mut history,
+                base + Duration::from_millis(120),
+                200,
+                grace,
+                grace,
+            ),
             0
         );
         assert_eq!(
-            mature_frontier(&mut history, base + Duration::from_millis(160), 200, grace),
+            mature_frontier(
+                &mut history,
+                base + Duration::from_millis(160),
+                200,
+                grace,
+                grace,
+            ),
             100
         );
         assert_eq!(
-            mature_frontier(&mut history, base + Duration::from_millis(230), 200, grace),
+            mature_frontier(
+                &mut history,
+                base + Duration::from_millis(230),
+                200,
+                grace,
+                grace,
+            ),
             200
+        );
+    }
+
+    #[test]
+    fn frontier_history_survives_switch_to_a_longer_grace() {
+        let base = Instant::now();
+        let short = Duration::from_millis(50);
+        let long = Duration::from_millis(125);
+        let mut history = VecDeque::from([(base, 0)]);
+        assert_eq!(
+            mature_frontier(
+                &mut history,
+                base + Duration::from_millis(50),
+                100,
+                short,
+                long,
+            ),
+            0
+        );
+        assert_eq!(
+            mature_frontier(
+                &mut history,
+                base + Duration::from_millis(100),
+                200,
+                short,
+                long,
+            ),
+            100
+        );
+        assert_eq!(
+            mature_frontier(
+                &mut history,
+                base + Duration::from_millis(120),
+                200,
+                long,
+                long,
+            ),
+            0
+        );
+        assert_eq!(
+            mature_frontier(
+                &mut history,
+                base + Duration::from_millis(180),
+                200,
+                long,
+                long,
+            ),
+            100
         );
     }
 

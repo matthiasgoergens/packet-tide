@@ -52,7 +52,7 @@ import sys
 from pathlib import Path
 
 raw = Path(sys.argv[1]).read_bytes()
-assert raw[:8] == b"TSUMAP1\0"
+assert raw[:8] == b"TSUMAP2\0"
 size, chunks = struct.unpack(">QQ", raw[8:24])
 words = struct.iter_unpack(">Q", raw[56:])
 received = sum(word[0].bit_count() for word in words)
@@ -117,8 +117,7 @@ resumed = json.loads(Path(sys.argv[2]).read_text())
 complete = json.loads(Path(sys.argv[3]).read_text())
 time_output = Path(sys.argv[4]).read_text()
 peak_rss = int(re.search(r"Maximum resident set size \(kbytes\): (\d+)", time_output).group(1))
-chunks = math.ceil(checkpoint["file_bytes"] / 1182)
-fresh_ip_bytes = checkpoint["file_bytes"] + chunks * (18 + 28)
+fresh_ip_bytes = checkpoint["file_bytes"] + checkpoint["chunks"] * (19 + 28)
 assert resumed["resumed_chunks"] == checkpoint["durable_chunks_after_kill"]
 assert 0 < resumed["udp_ip_bytes_offered"] < fresh_ip_bytes
 assert complete["resumed_chunks"] == checkpoint["chunks"]

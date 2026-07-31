@@ -2,7 +2,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-const MAGIC: &[u8; 8] = b"TSUMAP1\0";
+const MAGIC: &[u8; 8] = b"TSUMAP2\0";
 const HEADER_LEN: usize = 8 + 8 + 8 + 32;
 
 pub(crate) struct ResumeState {

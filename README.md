@@ -71,7 +71,7 @@ target/release/tsunami-udp send \
 The receiver syncs data before atomically publishing each receipt checkpoint.
 Consequently, a crash can cause a few chunks to be retransmitted but cannot make a
 restart trust data that was not durable. Receipt bitmaps are capped at 64 MiB per
-endpoint (about a 591 GiB file with the current payload), and sender repair queues
+endpoint (about a 590.5 GiB file with the current payload), and sender repair queues
 are capped at 65,536 chunks. `lab/test-resume.sh` kills both endpoints mid-transfer,
 resumes with a new session, verifies the output, and checks a completion retry.
 
