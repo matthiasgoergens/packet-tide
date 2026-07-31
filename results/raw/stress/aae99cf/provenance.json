@@ -1,0 +1,61 @@
+{
+  "binary": {
+    "path": "/tmp/tsunami-udp-resume/project/target/release/tsunami-udp",
+    "sha256": "b15d39c6a705aad63b20bdc87be7985f34cbf1f8a0f0858f9848d67ac282d171"
+  },
+  "captured_at_utc": "2026-07-31T15:57:47.422810+00:00",
+  "kernel": "Linux spider 7.1.5-arch1-2.1 #1 SMP PREEMPT_DYNAMIC Tue, 28 Jul 2026 18:18:29 +0000 x86_64 GNU/Linux",
+  "network_namespaces": "tsu-bench-d (id: 2)\ntsu-bench-r (id: 1)\ntsu-bench-s (id: 0)",
+  "platform": "Linux-7.1.5-arch1-2.1-x86_64-with-glibc2.44",
+  "receiver_link": "1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000\n    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00 promiscuity 0 allmulti 0 minmtu 0 maxmtu 0 netns-immutable addrgenmode eui64 numtxqueues 1 numrxqueues 1 gso_max_size 65536 gso_max_segs 65535 tso_max_size 524280 tso_max_segs 65535 gro_max_size 65536 gso_ipv4_max_size 65536 gro_ipv4_max_size 65536 \n    RX:  bytes packets errors dropped  missed   mcast           \n             0       0      0       0       0       0 \n    TX:  bytes packets errors dropped carrier collsns           \n             0       0      0       0       0       0 \n43: tsu-d0@if42: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default qlen 1000\n    link/ether 9e:33:20:21:65:6b brd ff:ff:ff:ff:ff:ff link-netns tsu-bench-r promiscuity 0 allmulti 0 minmtu 68 maxmtu 65535 \n    veth addrgenmode eui64 numtxqueues 32 numrxqueues 32 gso_max_size 1500 gso_max_segs 65535 tso_max_size 524280 tso_max_segs 65535 gro_max_size 1500 gso_ipv4_max_size 1500 gro_ipv4_max_size 1500 \n    RX:  bytes packets errors dropped  missed   mcast           \n            90       1      0       0       0       0 \n    TX:  bytes packets errors dropped carrier collsns           \n            90       1      0       0       0       0",
+  "router_link": "1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000\n    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00 promiscuity 0 allmulti 0 minmtu 0 maxmtu 0 netns-immutable addrgenmode eui64 numtxqueues 1 numrxqueues 1 gso_max_size 65536 gso_max_segs 65535 tso_max_size 524280 tso_max_segs 65535 gro_max_size 65536 gso_ipv4_max_size 65536 gro_ipv4_max_size 65536 \n    RX:  bytes packets errors dropped  missed   mcast           \n             0       0      0       0       0       0 \n    TX:  bytes packets errors dropped carrier collsns           \n             0       0      0       0       0       0 \n40: tsu-left0@if41: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default qlen 1000\n    link/ether 72:48:92:a2:fb:d7 brd ff:ff:ff:ff:ff:ff link-netns tsu-bench-s promiscuity 0 allmulti 0 minmtu 68 maxmtu 65535 \n    veth addrgenmode eui64 numtxqueues 32 numrxqueues 32 gso_max_size 1500 gso_max_segs 65535 tso_max_size 524280 tso_max_segs 65535 gro_max_size 1500 gso_ipv4_max_size 1500 gro_ipv4_max_size 1500 \n    RX:  bytes packets errors dropped  missed   mcast           \n            90       1      0       0       0       0 \n    TX:  bytes packets errors dropped carrier collsns           \n            90       1      0       0       0       0 \n42: tsu-right0@if43: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default qlen 1000\n    link/ether 9a:9d:2b:ac:08:6e brd ff:ff:ff:ff:ff:ff link-netns tsu-bench-d promiscuity 0 allmulti 0 minmtu 68 maxmtu 65535 \n    veth addrgenmode eui64 numtxqueues 32 numrxqueues 32 gso_max_size 1500 gso_max_segs 65535 tso_max_size 524280 tso_max_segs 65535 gro_max_size 1500 gso_ipv4_max_size 1500 gro_ipv4_max_size 1500 \n    RX:  bytes packets errors dropped  missed   mcast           \n            90       1      0       0       0       0 \n    TX:  bytes packets errors dropped carrier collsns           \n            90       1      0       0       0       0",
+  "router_qdisc": "qdisc noqueue 0: dev lo root refcnt 2 \n Sent 0 bytes 0 pkt (dropped 0, overlimits 0 requeues 0) \n backlog 0b 0p requeues 0\nqdisc noqueue 0: dev tsu-left0 root refcnt 2 \n Sent 0 bytes 0 pkt (dropped 0, overlimits 0 requeues 0) \n backlog 0b 0p requeues 0\nqdisc noqueue 0: dev tsu-right0 root refcnt 2 \n Sent 0 bytes 0 pkt (dropped 0, overlimits 0 requeues 0) \n backlog 0b 0p requeues 0",
+  "sender_link": "1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000\n    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00 promiscuity 0 allmulti 0 minmtu 0 maxmtu 0 netns-immutable addrgenmode eui64 numtxqueues 1 numrxqueues 1 gso_max_size 65536 gso_max_segs 65535 tso_max_size 524280 tso_max_segs 65535 gro_max_size 65536 gso_ipv4_max_size 65536 gro_ipv4_max_size 65536 \n    RX:  bytes packets errors dropped  missed   mcast           \n             0       0      0       0       0       0 \n    TX:  bytes packets errors dropped carrier collsns           \n             0       0      0       0       0       0 \n41: tsu-s0@if40: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq state UP mode DEFAULT group default qlen 1000\n    link/ether de:ee:fe:7f:fa:d8 brd ff:ff:ff:ff:ff:ff link-netns tsu-bench-r promiscuity 0 allmulti 0 minmtu 68 maxmtu 65535 \n    veth addrgenmode eui64 numtxqueues 32 numrxqueues 32 gso_max_size 1500 gso_max_segs 65535 tso_max_size 524280 tso_max_segs 65535 gro_max_size 1500 gso_ipv4_max_size 1500 gro_ipv4_max_size 1500 \n    RX:  bytes packets errors dropped  missed   mcast           \n            90       1      0       0       0       0 \n    TX:  bytes packets errors dropped carrier collsns           \n            90       1      0       0       0       0",
+  "sender_qdisc": "qdisc noqueue 0: dev lo root refcnt 2 \n Sent 0 bytes 0 pkt (dropped 0, overlimits 0 requeues 0) \n backlog 0b 0p requeues 0\nqdisc fq 8081: dev tsu-s0 root refcnt 33 limit 10000p flow_limit 100p buckets 1024 orphan_mask 1023 bands 3 priomap 1 2 2 2 1 2 0 0 1 1 1 1 1 1 1 1 weights 589824 196608 65536 quantum 3028b initial_quantum 15140b low_rate_threshold 550Kbit refill_delay 40ms timer_slack 10us horizon 10s horizon_drop offload_horizon 0us \n Sent 0 bytes 0 pkt (dropped 0, overlimits 0 requeues 0) \n backlog 0b 0p requeues 0\n  flows 0 (inactive 0 throttled 0) band0_pkts 0 band1_pkts 0 band2_pkts 0\n  gc 0 highprio 0 throttled 0",
+  "source_commit": "aae99cf",
+  "source_sha256": {
+    "Cargo.lock": "549002be6458656de1795ee1141df87a26c4b064a7bc2160fd068ce2092fb929",
+    "Cargo.toml": "1c6e3d396893f717da93118d063f8c8d41b69aafb350f421871ab7b9e5046c3f",
+    "lab/README.md": "22b073cd3ea68bd2f6d1a23697f2e1a492eafa428bd5832aac9434f37d7b950a",
+    "lab/analyze-confirmatory.py": "1cf5887655474227c629ac6207396abd5ed957020d983484b2fead239809521d",
+    "lab/analyze-rbd.py": "627e5f32e09108ffd46643bfa69cfe09df58464c0a1e8d733b570e8734e220a5",
+    "lab/capture-packets.py": "55f20b8a7dab3a4e385042f5630d2fac049298fafc28041fbb869273e05c9d6f",
+    "lab/capture-provenance.py": "7bbff0c1367744056a3e4aa86aa9a6d0f1547f7372fd80db20e10eccedcf0908",
+    "lab/cleanup.sh": "67292aa4e0c53b36a396b47d6cd2f25888bd87c5d5338d964fa13dcb02f42cae",
+    "lab/configure-network.sh": "c7d9c098ba67b73af16df9797c03930803c546c100211988f143dc13c7aa57a9",
+    "lab/evaluate-block.py": "0384bf8d2f23665fd3c047b957ca0e07bd49d6c67397a51ecf66fdd1f19e7b23",
+    "lab/generate-data.py": "931c2fdccb66c4c17e8cfb917927fb3a94016c6ffdd7f960935b1184d36b2b66",
+    "lab/host-snapshot.py": "7b0a2824166f41090d79bcbe765c07e6374b7aba8af384e0d8b80063df693a76",
+    "lab/matrix-confirmatory-session1.txt": "710bffc19ad391bbdcd2e13021aeade3a55ea98c834d5763d7144e39d8b0c017",
+    "lab/matrix-confirmatory-session2.txt": "18cda4283ab881e0aae4b92c9e88736fb51d734ff6fe9742848be2871136be77",
+    "lab/matrix-confirmatory-session3.txt": "88e5277b6b066717628e76e11014e9b01f054f0c2b17358ab51f2b859db8fc73",
+    "lab/matrix-crossover.txt": "40d28f1a03f73d68a2e0a63095ccc34cdd4d7c949a674ba824c1513643f19a1b",
+    "lab/matrix-initial.txt": "aaba4de5ed4c70625bd8348d8a5ba9457625af051cfd8092f375d661fd7120d1",
+    "lab/matrix-refine.txt": "fd8d7251efec57e16ff1f144184a9cfc08fd09ec4ba2dcd07b4a92cbca21d090",
+    "lab/matrix-smoke.txt": "5b3e5bd240bccfe6f0a49b99d2dea064f7ba8ac34189d6a813f5eab839490b89",
+    "lab/randomize-matrix.py": "7c82f0761de4c1d01865af524f8a1c9c90e6df2780769acdc88dd48744af910d",
+    "lab/run-matrix.sh": "5ff4e19aa66857ce2c26e6ad1d6ced6e04d8d9607a3d3384141ada242feb0304",
+    "lab/run-one.sh": "b14e678994dabb88f7f142e6d04ac20b1ebcfbce9011b8766dc515ad9a6b2968",
+    "lab/setup.sh": "c544816b19c7556df0fefd617c0928dc55197ca5b315e38daa15eed4dd7b571b",
+    "lab/stress-correctness.sh": "609b5672fae236ab8cd574374c4a38736c86d386c2e7b4ac1e47b683b7d9c3c4",
+    "lab/summarize.py": "e02b26c750152533745821c2a2918314601ab9e82004e855f6235cc0519af16b",
+    "lab/test-resume.sh": "97319b68cd1e72e8e225c1e582c87e3127eb9e95d14e8ccda6c469d2b4754570",
+    "lab/validate-packet-sizes.sh": "25e850b7f7097b1c4902096c211e76a5a3d4678b327c441ba0da8e60e9bb9c2d",
+    "lab/wait-idle.py": "6393b5ee2ff8bbcd277ce9f158ed7f91d59ac10f3ea3f24ec2f11312e3407630",
+    "src/main.rs": "082cbeced25959e0f4059822893e0f8c6e79aee2fe460dd5b3a00252e5d333ed"
+  },
+  "tcp": {
+    "available_congestion_control": "reno cubic bbr",
+    "bbr_module": "filename:       /lib/modules/7.1.5-arch1-2.1/kernel/net/ipv4/tcp_bbr.ko.zst\ndescription:    TCP BBR (Bottleneck Bandwidth and RTT)\nlicense:        Dual BSD/GPL\nauthor:         Soheil Hassas Yeganeh <soheil@google.com>\nauthor:         Yuchung Cheng <ycheng@google.com>\nauthor:         Neal Cardwell <ncardwell@google.com>\nauthor:         Van Jacobson <vanj@google.com>\nsrcversion:     4F81019BACF273AA5F955A9\ndepends:        \nintree:         Y\nname:           tcp_bbr\nretpoline:      Y\nvermagic:       7.1.5-arch1-2.1 SMP preempt mod_unload \nsig_id:         PKCS#7\nsigner:         Build time autogenerated kernel key\nsig_key:        52:7B:FA:9F:B0:52:6B:65:FF:17:D8:F2:FF:B9:E5:98:73:ED:88:1D\nsig_hashalgo:   sha512\nsignature:      30:65:02:30:64:AB:5A:DD:BF:40:86:54:65:FC:90:9D:31:EB:DB:65:\n\t\t44:52:B4:98:1C:F6:54:A2:09:3B:0E:71:92:40:E7:C1:31:7F:9A:E1:\n\t\t90:8C:3B:DE:75:70:FB:2B:C0:0B:C1:01:02:31:00:D9:93:C1:D3:50:\n\t\t73:2F:DB:2C:E0:42:32:18:30:A5:48:A7:B3:B9:03:B3:71:90:4C:41:\n\t\tAC:93:1D:99:74:79:B8:75:53:8E:91:BC:F6:3F:EB:73:8A:98:C6:DB:\n\t\tF9:91:1C",
+    "default_congestion_control": "cubic"
+  },
+  "tools": {
+    "cargo": null,
+    "iproute2": "ip utility, iproute2-7.1.0, libbpf 1.7.0",
+    "rsync": [
+      "rsync  version 3.4.4  protocol version 32"
+    ],
+    "rustc": null,
+    "tc": "tc utility, iproute2-7.1.0, libbpf 1.7.0"
+  }
+}
