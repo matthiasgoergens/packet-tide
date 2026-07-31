@@ -1,0 +1,31 @@
+{
+  "verified": true,
+  "source_commit": "10fa9b4",
+  "binary_sha256": "b15d39c6a705aad63b20bdc87be7985f34cbf1f8a0f0858f9848d67ac282d171",
+  "receiver_peak_rss_kib": 2912,
+  "checkpoint": {
+    "file_bytes": 134217728,
+    "chunks": 113552,
+    "durable_chunks_after_kill": 20381
+  },
+  "resumed_sender": {
+    "transport": "udp",
+    "bytes": 134217728,
+    "elapsed_ms": 4682.838,
+    "goodput_mbps": 229.293,
+    "datagrams": 93171,
+    "repairs": 0,
+    "udp_ip_bytes_offered": 114413252,
+    "resumed_chunks": 20381
+  },
+  "complete_retry_sender": {
+    "transport": "udp",
+    "bytes": 134217728,
+    "elapsed_ms": 0.0,
+    "goodput_mbps": 0.0,
+    "datagrams": 0,
+    "repairs": 0,
+    "udp_ip_bytes_offered": 0,
+    "resumed_chunks": 113552
+  }
+}
