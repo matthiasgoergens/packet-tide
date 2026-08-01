@@ -19,7 +19,7 @@ use auth::{ControlReader, ControlWriter, Direction, SecretKey, SessionAuth};
 use resume::ResumeState;
 
 const DATAGRAM_SIZE: usize = 1200;
-const HEADER_SIZE: usize = 44;
+const HEADER_SIZE: usize = 28;
 const PAYLOAD_SIZE: usize = DATAGRAM_SIZE - HEADER_SIZE;
 const REPORT_INTERVAL: Duration = Duration::from_millis(50);
 const MAX_RANGES_PER_REPORT: usize = 512;
@@ -662,10 +662,9 @@ fn build_packet(
     }
     let payload_len = (size.saturating_sub(offset)).min(PAYLOAD_SIZE as u64) as usize;
     packet[0] = 2;
-    packet[1..17].copy_from_slice(&auth.session);
-    packet[17..25].copy_from_slice(&sequence.to_be_bytes());
-    packet[25] = u8::from(repair);
-    packet[26..28].copy_from_slice(&(payload_len as u16).to_be_bytes());
+    packet[1..9].copy_from_slice(&sequence.to_be_bytes());
+    packet[9] = u8::from(repair);
+    packet[10..12].copy_from_slice(&(payload_len as u16).to_be_bytes());
     let mut read = 0;
     while read < payload_len {
         let count = file.read_at(
@@ -679,10 +678,10 @@ fn build_packet(
     }
     let tag = auth::udp_tag_parts(
         &auth.udp,
-        &packet[..28],
+        &packet[..12],
         &packet[HEADER_SIZE..HEADER_SIZE + payload_len],
     );
-    packet[28..44].copy_from_slice(&tag);
+    packet[12..28].copy_from_slice(&tag);
     Ok(HEADER_SIZE + payload_len)
 }
 
@@ -1014,16 +1013,16 @@ fn receive_udp(
                 if count < HEADER_SIZE {
                     continue;
                 }
-                if packet[0] != 2 || packet[1..17] != hello.session {
+                if packet[0] != 2 {
                     continue;
                 }
-                let sequence = u64::from_be_bytes(packet[17..25].try_into()?);
-                let repair = match packet[25] {
+                let sequence = u64::from_be_bytes(packet[1..9].try_into()?);
+                let repair = match packet[9] {
                     0 => false,
                     1 => true,
                     _ => continue,
                 };
-                let payload_len = u16::from_be_bytes(packet[26..28].try_into()?) as usize;
+                let payload_len = u16::from_be_bytes(packet[10..12].try_into()?) as usize;
                 if sequence >= hello.chunks
                     || payload_len > PAYLOAD_SIZE
                     || count != HEADER_SIZE + payload_len
@@ -1032,9 +1031,9 @@ fn receive_udp(
                 }
                 if !auth::verify_udp_tag_parts(
                     &session_auth.udp,
-                    &packet[..28],
+                    &packet[..12],
                     &packet[HEADER_SIZE..count],
-                    &packet[28..44],
+                    &packet[12..28],
                 ) {
                     continue;
                 }
@@ -1317,11 +1316,11 @@ mod tests {
         let auth = auth::test_session();
         let mut packet = vec![0_u8; DATAGRAM_SIZE];
         let original = build_packet(&file, 7, &auth, 0, false, &mut packet).unwrap();
-        assert_eq!(packet[25], 0);
-        assert_eq!(u16::from_be_bytes(packet[26..28].try_into().unwrap()), 7);
+        assert_eq!(packet[9], 0);
+        assert_eq!(u16::from_be_bytes(packet[10..12].try_into().unwrap()), 7);
         assert_eq!(original, HEADER_SIZE + 7);
         let repair = build_packet(&file, 7, &auth, 0, true, &mut packet).unwrap();
-        assert_eq!(packet[25], 1);
+        assert_eq!(packet[9], 1);
         assert_eq!(repair, original);
         fs::remove_file(path).unwrap();
     }

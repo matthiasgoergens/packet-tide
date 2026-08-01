@@ -122,7 +122,7 @@ resumed = json.loads(Path(sys.argv[2]).read_text())
 complete = json.loads(Path(sys.argv[3]).read_text())
 time_output = Path(sys.argv[4]).read_text()
 peak_rss = int(re.search(r"Maximum resident set size \(kbytes\): (\d+)", time_output).group(1))
-fresh_ip_bytes = checkpoint["file_bytes"] + checkpoint["chunks"] * (44 + 28)
+fresh_ip_bytes = checkpoint["file_bytes"] + checkpoint["chunks"] * (28 + 28)
 assert resumed["resumed_chunks"] == checkpoint["durable_chunks_after_kill"]
 assert 0 < resumed["udp_ip_bytes_offered"] < fresh_ip_bytes
 assert complete["resumed_chunks"] == checkpoint["chunks"]

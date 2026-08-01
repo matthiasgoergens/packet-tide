@@ -22,7 +22,7 @@ that is acknowledged reliably.
 The initial implementation should have:
 
 - one file per transfer;
-- a session ID and chunk number in every datagram;
+- a session-bound authentication tag and chunk number in every datagram;
 - payloads sized to avoid IP fragmentation (about 1,200 bytes by default);
 - configurable token-bucket pacing;
 - periodic missing-range reports rather than per-packet acknowledgements;
@@ -115,7 +115,7 @@ never shared across TSU1 and TSU2.
 The receiver syncs data before atomically publishing each receipt checkpoint.
 Consequently, a crash can cause a few chunks to be retransmitted but cannot make a
 restart trust data that was not durable. Receipt bitmaps are capped at 64 MiB per
-endpoint (about a 578 GiB file with the current payload), and sender repair queues
+endpoint (about a 586 GiB file with the current payload), and sender repair queues
 are capped at 65,536 chunks. `lab/test-resume.sh` kills both endpoints mid-transfer,
 resumes with a new session, verifies the output, and checks a completion retry.
 

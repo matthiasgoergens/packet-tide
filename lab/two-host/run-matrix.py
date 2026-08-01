@@ -240,7 +240,7 @@ def main() -> None:
     if args.smoke:
         args.blocks = 1
         scenarios = tuple({**scenario, "file_bytes": 1_048_576} for scenario in DEFAULT_SCENARIOS)
-    if args.blocks < 2 and not args.smoke:
+    if args.blocks < 2 and not (args.smoke or args.allow_same_host_smoke):
         raise SystemExit("--blocks must be at least 2")
     if args.dry_run:
         rng = random.Random(args.seed)

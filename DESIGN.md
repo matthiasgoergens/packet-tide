@@ -101,17 +101,19 @@ The receiver accepts the session, creates a temporary output file, allocates a
 chunk-receipt bitmap, and tells the sender which UDP address and port to use.
 
 For UDP resume, immutable size, SHA-256, payload size, and chunk count identify the
-object while every connection gets a fresh random session ID. Before sending new
+object while every connection gets a fresh random session ID and derived packet
+key. Before sending new
 data, the receiver streams nonzero words from its durable receipt bitmap over the
 control connection. The sender skips those chunks; UDP packets from an old session
-remain harmless because their session ID no longer matches.
+remain harmless because their authentication tag does not verify under the new
+session key.
 
 ### UDP data packet
 
 Each data packet contains at least:
 
 - protocol version and packet type;
-- session ID;
+- session binding (implicit in the per-transfer packet key in v0.1);
 - chunk number;
 - packet kind (original or repair);
 - payload length;
@@ -147,8 +149,8 @@ trusted. Checkpoints occur at most once per second, while live missing reports c
 remain more frequent.
 
 Memory has explicit ceilings. Each endpoint rejects objects requiring more than a
-64 MiB receipt bitmap: 536,870,912 chunks, or about 590.5 GiB with the current
-1,181-byte payload. The sender's queued-repair set and cooldown cache are each
+64 MiB receipt bitmap: 536,870,912 chunks, or about 586 GiB with the current
+1,172-byte payload. The sender's queued-repair set and cooldown cache are each
 capped at 65,536 chunk entries. Repeated cumulative reports refill a capped queue,
 so dropping excess advisory entries affects latency rather than correctness.
 
