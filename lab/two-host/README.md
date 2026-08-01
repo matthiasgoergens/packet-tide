@@ -9,10 +9,11 @@ verifies every output by SHA-256.
 No namespace is prepared manually. Each treatment gets an ephemeral Podman
 sender container. Network impairment is attached only to that container's
 private routed interface; the script never changes a physical host qdisc or NIC
-offload setting. The receiver runs host-native by default, so a Raspberry Pi does
-not need Podman. The sender container requires `CAP_NET_ADMIN`, while neither
-host needs a global network change. The default matrix preregisters 12 blocks
-each of:
+offload setting. GSO/GRO aggregation on the private interface is capped at the
+1,500-byte MTU so netem meters comparable wire-sized packets for TCP and UDP.
+The receiver runs host-native by default, so a Raspberry Pi does not need Podman.
+The sender container requires `CAP_NET_ADMIN`, while neither host needs a global
+network change. The default matrix preregisters 12 blocks each of:
 
 - clean: 16 MiB, 100 Mbit/s, 20 ms added RTT, 0% forward loss;
 - lossy: 16 MiB, 100 Mbit/s, 100 ms added RTT, 1% forward loss.

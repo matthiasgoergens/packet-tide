@@ -243,7 +243,7 @@ exit 1
     sender_script = f"""
 nice -n 10 ionice -c2 -n7 {runtime} run --name {quote(sender_name)} --cap-add NET_ADMIN \
   -v {quote(work)}:/work:z {image} sh -lc \
-  {quote(f'iface=$(ip route show default | head -n1 | cut -d " " -f5); test -n "$iface"; tc qdisc replace dev "$iface" root netem limit 10000 delay {scenario["rtt_ms"]}ms{netem_loss} rate {scenario["rate_mbit"]}mbit seed {seed} && exec /work/tsunami-udp send --connect {args.receiver_address}:{control_port} --udp-target {args.receiver_address}:{udp_port} --file /work/source-{scenario["file_bytes"]}.bin --transport {treatment} --rate-mbps {sender_rate_mbit} --repair-cooldown-ms {2 * float(scenario["rtt_ms"]) + 50:.0f} --key-file /work/auth.key')}
+  {quote(f'iface=$(ip route show default | head -n1 | cut -d " " -f5); test -n "$iface"; ip link set dev "$iface" gso_max_size 1500 gso_ipv4_max_size 1500 gro_max_size 1500 gro_ipv4_max_size 1500; tc qdisc replace dev "$iface" root netem limit 10000 delay {scenario["rtt_ms"]}ms{netem_loss} rate {scenario["rate_mbit"]}mbit seed {seed} && exec /work/tsunami-udp send --connect {args.receiver_address}:{control_port} --udp-target {args.receiver_address}:{udp_port} --file /work/source-{scenario["file_bytes"]}.bin --transport {treatment} --rate-mbps {sender_rate_mbit} --repair-cooldown-ms {2 * float(scenario["rtt_ms"]) + 50:.0f} --key-file /work/auth.key')}
 """
     sent = remote(
         args.sender,
@@ -441,6 +441,7 @@ def main() -> None:
         "treatments": list(TREATMENTS),
         "randomization_seed": args.seed,
         "udp_sender_rate_mbit": args.udp_rate_mbit,
+        "sender_private_interface_offload_cap_bytes": 1500,
         "plan": plan,
         "release_gates": {
             "minimum_complete_blocks_per_scenario": 10,
