@@ -484,6 +484,20 @@ mod tests {
     }
 
     #[test]
+    fn mutual_handshake_rejects_a_wrong_key() {
+        let (mut client, mut server) = tcp_pair();
+        let server_thread =
+            thread::spawn(move || server_handshake(&mut server, &SecretKey([1_u8; 32])).is_err());
+        let client_result = client_handshake(
+            &mut client,
+            &SecretKey([2_u8; 32]),
+            "TCP 0 0000000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000 0 50",
+        );
+        assert!(client_result.is_err());
+        assert!(server_thread.join().unwrap());
+    }
+
+    #[test]
     fn control_reader_rejects_replay() {
         let (mut sender, receiver) = tcp_pair();
         let auth = derive_session(&[3_u8; 32], b"control replay test");
