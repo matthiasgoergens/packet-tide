@@ -122,6 +122,13 @@ def stage(args: argparse.Namespace, run_id: str) -> tuple[str, dict[str, str]]:
         ("sender", args.sender, args.sender_proxy_jump),
         ("receiver", args.receiver, args.receiver_proxy_jump),
     ):
+        if endpoint == "receiver" and args.receiver_mode == "native":
+            remote(
+                host,
+                f"pkill -TERM -f -- {quote('^' + work + '/tsunami-udp receive ')} 2>/dev/null || true\n",
+                check=False,
+                jump=jump,
+            )
         remote(host, f"mkdir -p {quote(work)}\nchmod 700 {quote(work)}\n", jump=jump)
         copy_to(endpoint_binaries[endpoint], host, f"{work}/tsunami-udp", jump)
         copy_to(args.key_file, host, f"{work}/auth.key", jump)
@@ -154,6 +161,8 @@ if [[ -n $ids ]]; then
   nice -n 10 ionice -c2 -n7 {quote(runtime)} rm -f $ids >/dev/null 2>&1 || true
 fi
 """
+    else:
+        script += f"pkill -TERM -f -- {quote('^' + work + '/tsunami-udp receive ')} 2>/dev/null || true\n"
     if not keep:
         script += f"rm -rf {quote(work)}\n"
     remote(host, script, check=False, jump=jump)
@@ -231,6 +240,13 @@ exit 1
         jump=args.receiver_proxy_jump,
     )
     if ready.returncode != 0:
+        if receiver_process is not None:
+            receiver_process.terminate()
+            try:
+                receiver_process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                receiver_process.kill()
+                receiver_process.communicate()
         raise RuntimeError(f"receiver did not listen on port {control_port}:\n{ready.stdout}\n{ready.stderr}")
 
     loss = float(scenario["loss_percent"])

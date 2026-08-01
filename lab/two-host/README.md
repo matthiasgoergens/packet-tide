@@ -48,7 +48,9 @@ If an idle-gate timeout interrupts a run between complete blocks, rerun the same
 command with `--resume` and, if desired, a longer `--idle-timeout`. Continuation
 reuses the original schedule and run ID, validates host and artifact provenance,
 skips only complete three-treatment blocks, rejects partial blocks, and writes a
-numbered continuation record.
+numbered continuation record. Native receivers are cleaned up by the exact
+run-scoped executable path, so an interrupted SSH controller cannot leave a port
+collision for the next continuation.
 
 The evaluator is the release gate, not just a plotting script. It fails unless
 there are at least ten complete randomized blocks per condition, every transfer
