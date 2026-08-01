@@ -1,0 +1,128 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: 1.88.0
+
+jobs:
+  validate:
+    name: Validate tag and source package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+
+      - name: Install minimum Rust toolchain
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt,clippy
+
+      - name: Check formatting
+        run: cargo +"$RUST_TOOLCHAIN" fmt --all -- --check
+
+      - name: Lint
+        run: cargo +"$RUST_TOOLCHAIN" clippy --locked --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo +"$RUST_TOOLCHAIN" test --locked
+
+      - name: Validate tag, source package, and installation
+        run: RUSTUP_TOOLCHAIN="$RUST_TOOLCHAIN" release/check-release.sh "$GITHUB_REF_NAME"
+
+      - name: Retain clean source package
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-source
+          path: target/package/tsunami-udp-*.crate
+          if-no-files-found: error
+          retention-days: 7
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+
+      - name: Install musl build tools
+        run: sudo apt-get update && sudo apt-get install --yes musl-tools
+
+      - name: Install minimum Rust toolchain and target
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup target add --toolchain "$RUST_TOOLCHAIN" "${{ matrix.target }}"
+
+      - name: Build static release binary
+        run: RUSTFLAGS="-C linker=musl-gcc" cargo +"$RUST_TOOLCHAIN" build --release --locked --target "${{ matrix.target }}"
+
+      - name: Verify and archive binary
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          version=${GITHUB_REF_NAME#v}
+          binary="target/$TARGET/release/tsunami-udp"
+          test "$("$binary" --version)" = "tsunami-udp $version"
+          file "$binary" | grep -Eq 'static(-pie|ally) linked'
+          directory="tsunami-udp-$version-$TARGET"
+          mkdir -p "dist/$directory"
+          install -m 0755 "$binary" "dist/$directory/tsunami-udp"
+          install -m 0644 README.md LICENSE "dist/$directory/"
+          source_date_epoch=$(git show -s --format=%ct "$GITHUB_SHA")
+          tar --sort=name --mtime="@$source_date_epoch" --owner=0 --group=0 --numeric-owner \
+            -C dist -cf - "$directory" | gzip -9n >"dist/$directory.tar.gz"
+
+      - name: Retain release archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+
+      - name: Download validated artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum *.crate *.tar.gz | sort -k2 >SHA256SUMS
+          sha256sum --check SHA256SUMS
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/*.crate dist/*.tar.gz dist/SHA256SUMS --verify-tag --generate-notes --title "$GITHUB_REF_NAME"

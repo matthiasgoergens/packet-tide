@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: 1.88.0
+
+jobs:
+  quality:
+    name: Rust 1.88 quality and package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install minimum Rust toolchain
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt,clippy
+
+      - name: Check formatting
+        run: cargo +"$RUST_TOOLCHAIN" fmt --all -- --check
+
+      - name: Lint
+        run: cargo +"$RUST_TOOLCHAIN" clippy --locked --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo +"$RUST_TOOLCHAIN" test --locked
+
+      - name: Verify clean source package and installation
+        run: RUSTUP_TOOLCHAIN="$RUST_TOOLCHAIN" release/check-release.sh
+
+  stable:
+    name: Current stable Rust
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install current stable Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Test with current stable Rust
+        run: cargo +stable test --locked

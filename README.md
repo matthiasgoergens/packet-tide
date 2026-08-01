@@ -51,12 +51,27 @@ See [DESIGN.md](DESIGN.md) for the proposed wire behavior and roadmap, and
 
 ## Install and run
 
-The Rust 1.85+ implementation supports Linux. Install from a source checkout:
+The Rust 1.88+ implementation supports Linux. Install from a source checkout:
 
 ```sh
 cargo install --locked --path .
 tsunami-udp --version
 ```
+
+Tagged releases publish static Linux archives for x86-64 and ARM64, a clean
+Cargo source package, and `SHA256SUMS`. After downloading an archive and the
+checksum file from the hosting repository's Releases page:
+
+```sh
+sha256sum --check --ignore-missing SHA256SUMS
+tar -xzf tsunami-udp-VERSION-TARGET.tar.gz
+sudo install -m 0755 tsunami-udp-VERSION-TARGET/tsunami-udp /usr/local/bin/
+tsunami-udp --version
+```
+
+The project does not yet have a configured public Git remote, so this README
+deliberately does not guess a release URL. See [release/README.md](release/README.md)
+for the exact artifact names, source-package installation, and maintainer checks.
 
 Generate a 256-bit shared key once, then copy it to the other endpoint through a
 secure channel. `keygen` creates a new mode-0600 file and refuses to overwrite an
