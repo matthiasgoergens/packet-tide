@@ -24,6 +24,7 @@ ports or adjust `--base-port` if 24000 onward is unavailable.
 ```sh
 python3 lab/two-host/run-matrix.py \
   --sender SSH_ALIAS_1 --receiver SSH_ALIAS_2 \
+  --receiver-proxy-jump SSH_JUMP_HOST \
   --receiver-address ADDRESS_REACHABLE_FROM_SENDER \
   --binary dist/tsunami-udp-v0.1.0-x86_64-unknown-linux-musl/tsunami-udp \
   --receiver-binary dist/tsunami-udp-v0.1.0-aarch64-unknown-linux-musl/tsunami-udp \
@@ -48,3 +49,5 @@ prove distinct endpoints. Its preregistered one-sided bootstrap gates are:
 Same-host smoke output is deliberately rejected even when its timing looks good.
 When the hosts have different architectures, the preregistration records one
 artifact hash per endpoint and requires that exact pair for every treatment.
+`--sender-proxy-jump` and `--receiver-proxy-jump` use OpenSSH ProxyJump for
+endpoints that are only routed from another machine.

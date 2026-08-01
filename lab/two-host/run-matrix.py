@@ -32,13 +32,27 @@ def run(command: list[str], *, input_text: str | None = None, check: bool = True
     return subprocess.run(command, input=input_text, text=True, capture_output=True, check=check)
 
 
-def remote(host: str, script: str, *, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return run(["ssh", host, "bash", "-s"], input_text="set -euo pipefail\n" + script, check=check)
+def ssh_options(jump: str | None) -> list[str]:
+    return [] if jump is None else ["-o", f"ProxyJump={jump}"]
 
 
-def start_remote(host: str, script: str) -> subprocess.Popen[str]:
+def remote(
+    host: str,
+    script: str,
+    *,
+    check: bool = True,
+    jump: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return run(
+        ["ssh", *ssh_options(jump), host, "bash", "-s"],
+        input_text="set -euo pipefail\n" + script,
+        check=check,
+    )
+
+
+def start_remote(host: str, script: str, jump: str | None = None) -> subprocess.Popen[str]:
     process = subprocess.Popen(
-        ["ssh", host, "bash", "-s"],
+        ["ssh", *ssh_options(jump), host, "bash", "-s"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -55,29 +69,37 @@ def quote(value: object) -> str:
     return shlex.quote(str(value))
 
 
-def identity(host: str) -> dict[str, str]:
+def identity(host: str, jump: str | None = None) -> dict[str, str]:
     script = """
 machine=$(cat /etc/machine-id)
 printf '%s\\n' "$machine"
 uname -srmo
 printf '%s\\n' "$(nproc)"
 """
-    lines = remote(host, script).stdout.splitlines()
+    lines = remote(host, script, jump=jump).stdout.splitlines()
     if len(lines) != 3:
         raise RuntimeError(f"could not identify {host}")
     return {"ssh": host, "machine_id_sha256": hashlib.sha256(lines[0].encode()).hexdigest(), "uname": lines[1], "cpus": lines[2]}
 
 
-def normalized_load(host: str) -> float:
-    output = remote(host, "read -r load _ </proc/loadavg\nprintf '%s %s\\n' \"$load\" \"$(nproc)\"\n").stdout
+def normalized_load(host: str, jump: str | None = None) -> float:
+    output = remote(
+        host,
+        "read -r load _ </proc/loadavg\nprintf '%s %s\\n' \"$load\" \"$(nproc)\"\n",
+        jump=jump,
+    ).stdout
     load, cpus = output.split()
     return float(load) / int(cpus)
 
 
-def wait_idle(hosts: tuple[str, str], ceiling: float, timeout: float) -> dict[str, float]:
+def wait_idle(
+    hosts: tuple[tuple[str, str | None], tuple[str, str | None]],
+    ceiling: float,
+    timeout: float,
+) -> dict[str, float]:
     started = time.monotonic()
     while True:
-        loads = {host: normalized_load(host) for host in hosts}
+        loads = {host: normalized_load(host, jump) for host, jump in hosts}
         if all(value <= ceiling for value in loads.values()):
             return loads
         if time.monotonic() - started >= timeout:
@@ -85,8 +107,8 @@ def wait_idle(hosts: tuple[str, str], ceiling: float, timeout: float) -> dict[st
         time.sleep(5)
 
 
-def copy_to(local: Path, host: str, destination: str) -> None:
-    run(["scp", "-q", str(local), f"{host}:{destination}"])
+def copy_to(local: Path, host: str, destination: str, jump: str | None = None) -> None:
+    run(["scp", "-q", *ssh_options(jump), str(local), f"{host}:{destination}"])
 
 
 def stage(args: argparse.Namespace, run_id: str) -> tuple[str, dict[str, str]]:
@@ -95,11 +117,18 @@ def stage(args: argparse.Namespace, run_id: str) -> tuple[str, dict[str, str]]:
         "sender": args.binary,
         "receiver": args.receiver_binary or args.binary,
     }
-    for endpoint, host in (("sender", args.sender), ("receiver", args.receiver)):
-        remote(host, f"mkdir -p {quote(work)}\nchmod 700 {quote(work)}\n")
-        copy_to(endpoint_binaries[endpoint], host, f"{work}/tsunami-udp")
-        copy_to(args.key_file, host, f"{work}/auth.key")
-        remote(host, f"chmod 700 {quote(work + '/tsunami-udp')}\nchmod 600 {quote(work + '/auth.key')}\n")
+    for endpoint, host, jump in (
+        ("sender", args.sender, args.sender_proxy_jump),
+        ("receiver", args.receiver, args.receiver_proxy_jump),
+    ):
+        remote(host, f"mkdir -p {quote(work)}\nchmod 700 {quote(work)}\n", jump=jump)
+        copy_to(endpoint_binaries[endpoint], host, f"{work}/tsunami-udp", jump)
+        copy_to(args.key_file, host, f"{work}/auth.key", jump)
+        remote(
+            host,
+            f"chmod 700 {quote(work + '/tsunami-udp')}\nchmod 600 {quote(work + '/auth.key')}\n",
+            jump=jump,
+        )
     hashes = {
         endpoint: hashlib.sha256(path.read_bytes()).hexdigest()
         for endpoint, path in endpoint_binaries.items()
@@ -107,7 +136,15 @@ def stage(args: argparse.Namespace, run_id: str) -> tuple[str, dict[str, str]]:
     return work, hashes
 
 
-def cleanup(host: str, runtime: str, run_id: str, work: str, keep: bool, containers: bool) -> None:
+def cleanup(
+    host: str,
+    runtime: str,
+    run_id: str,
+    work: str,
+    keep: bool,
+    containers: bool,
+    jump: str | None = None,
+) -> None:
     script = ""
     if containers:
         script += f"""
@@ -118,10 +155,10 @@ fi
 """
     if not keep:
         script += f"rm -rf {quote(work)}\n"
-    remote(host, script, check=False)
+    remote(host, script, check=False, jump=jump)
 
 
-def create_source(host: str, work: str, size: int) -> str:
+def create_source(host: str, work: str, size: int, jump: str | None = None) -> str:
     path = f"{work}/source-{size}.bin"
     script = f"""
 if [[ ! -f {quote(path)} || $(stat -c %s {quote(path)}) -ne {size} ]]; then
@@ -129,7 +166,7 @@ if [[ ! -f {quote(path)} || $(stat -c %s {quote(path)}) -ne {size} ]]; then
 fi
 sha256sum {quote(path)} | awk '{{print $1}}'
 """
-    return remote(host, script).stdout.strip()
+    return remote(host, script, jump=jump).stdout.strip()
 
 
 def run_treatment(
@@ -156,6 +193,7 @@ def run_treatment(
     remote(
         args.receiver,
         f"rm -f {quote(output)} {quote(output + '.part')} {quote(output + '.part.map')} {quote(receiver_log)}\n",
+        jump=args.receiver_proxy_jump,
     )
     receiver_process: subprocess.Popen[str] | None = None
     if args.receiver_mode == "native":
@@ -166,6 +204,7 @@ exec nice -n 10 ionice -c2 -n7 {quote(work + '/tsunami-udp')} receive \
   --listen 0.0.0.0:{control_port} --udp 0.0.0.0:{udp_port} \
   --out {quote(output)} --key-file {quote(work + '/auth.key')}
 """,
+            args.receiver_proxy_jump,
         )
     else:
         receiver_script = f"""
@@ -176,7 +215,7 @@ nice -n 10 ionice -c2 -n7 {runtime} run -d --name {quote(receiver_name)} \
   /work/tsunami-udp receive --listen 0.0.0.0:9000 --udp 0.0.0.0:9001 \
   --out /work/{Path(output).name} --key-file /work/auth.key
 """
-        remote(args.receiver, receiver_script)
+        remote(args.receiver, receiver_script, jump=args.receiver_proxy_jump)
     ready = remote(
         args.receiver,
         f"""
@@ -188,6 +227,7 @@ done
 exit 1
 """,
         check=False,
+        jump=args.receiver_proxy_jump,
     )
     if ready.returncode != 0:
         raise RuntimeError(f"receiver did not listen on port {control_port}:\n{ready.stdout}\n{ready.stderr}")
@@ -200,7 +240,12 @@ nice -n 10 ionice -c2 -n7 {runtime} run --name {quote(sender_name)} --cap-add NE
   -v {quote(work)}:/work:z {image} sh -lc \
   {quote(f'iface=$(ip route show default | head -n1 | cut -d " " -f5); test -n "$iface"; tc qdisc replace dev "$iface" root netem limit 10000 delay {scenario["rtt_ms"]}ms{netem_loss} rate {scenario["rate_mbit"]}mbit seed {seed} && exec /work/tsunami-udp send --connect {args.receiver_address}:{control_port} --udp-target {args.receiver_address}:{udp_port} --file /work/source-{scenario["file_bytes"]}.bin --transport {treatment} --rate-mbps {scenario["rate_mbit"]} --repair-cooldown-ms {2 * float(scenario["rtt_ms"]) + 50:.0f} --key-file /work/auth.key')}
 """
-    sent = remote(args.sender, sender_script, check=False)
+    sent = remote(
+        args.sender,
+        sender_script,
+        check=False,
+        jump=args.sender_proxy_jump,
+    )
     if sent.returncode != 0:
         if receiver_process is not None:
             receiver_process.terminate()
@@ -215,11 +260,13 @@ nice -n 10 ionice -c2 -n7 {runtime} run --name {quote(sender_name)} --cap-add NE
                 args.receiver,
                 f"{runtime} logs {quote(receiver_name)} 2>&1 || true\n",
                 check=False,
+                jump=args.receiver_proxy_jump,
             ).stdout
             remote(
                 args.receiver,
                 f"nice -n 10 ionice -c2 -n7 {runtime} rm -f {quote(receiver_name)} >/dev/null 2>&1 || true\n",
                 check=False,
+                jump=args.receiver_proxy_jump,
             )
         raise RuntimeError(f"{treatment} sender failed ({sent.returncode}):\n{sent.stderr}\n{logs}")
     if receiver_process is not None:
@@ -237,8 +284,14 @@ nice -n 10 ionice -c2 -n7 {runtime} run --name {quote(sender_name)} --cap-add NE
             args.receiver,
             f"timeout 180s nice -n 10 ionice -c2 -n7 {runtime} wait {quote(receiver_name)}\n",
             check=False,
+            jump=args.receiver_proxy_jump,
         )
-        logs = remote(args.receiver, f"{runtime} logs {quote(receiver_name)} 2>&1 || true\n", check=False).stdout
+        logs = remote(
+            args.receiver,
+            f"{runtime} logs {quote(receiver_name)} 2>&1 || true\n",
+            check=False,
+            jump=args.receiver_proxy_jump,
+        ).stdout
         receiver_status = receiver_done.stdout.strip()
         receiver_failed = receiver_done.returncode != 0 or receiver_status != "0"
     Path(args.results).mkdir(parents=True, exist_ok=True)
@@ -248,12 +301,26 @@ nice -n 10 ionice -c2 -n7 {runtime} run --name {quote(sender_name)} --cap-add NE
             f"{treatment} failed (sender={sent.returncode}, receiver={receiver_status!r}):\n{sent.stderr}\n{logs}"
         )
     sender_json = json.loads(sent.stdout.strip().splitlines()[-1])
-    output_hash = remote(args.receiver, f"sha256sum {quote(output)} | awk '{{print $1}}'\n").stdout.strip()
+    output_hash = remote(
+        args.receiver,
+        f"sha256sum {quote(output)} | awk '{{print $1}}'\n",
+        jump=args.receiver_proxy_jump,
+    ).stdout.strip()
     if output_hash != source_hash:
         raise RuntimeError(f"hash mismatch for {treatment}: {source_hash} != {output_hash}")
-    remote(args.sender, f"nice -n 10 ionice -c2 -n7 {runtime} rm -f {quote(sender_name)} >/dev/null\n", check=False)
+    remote(
+        args.sender,
+        f"nice -n 10 ionice -c2 -n7 {runtime} rm -f {quote(sender_name)} >/dev/null\n",
+        check=False,
+        jump=args.sender_proxy_jump,
+    )
     if args.receiver_mode == "container":
-        remote(args.receiver, f"nice -n 10 ionice -c2 -n7 {runtime} rm -f {quote(receiver_name)} >/dev/null\n", check=False)
+        remote(
+            args.receiver,
+            f"nice -n 10 ionice -c2 -n7 {runtime} rm -f {quote(receiver_name)} >/dev/null\n",
+            check=False,
+            jump=args.receiver_proxy_jump,
+        )
     sender_json.update(
         {
             "verified": True,
@@ -280,6 +347,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--sender", required=True, help="SSH host for the sending Linux machine")
     parser.add_argument("--receiver", required=True, help="SSH host for the receiving Linux machine")
+    parser.add_argument("--sender-proxy-jump", help="optional SSH jump host for the sender")
+    parser.add_argument("--receiver-proxy-jump", help="optional SSH jump host for the receiver")
     parser.add_argument("--receiver-address", required=True, help="receiver address reachable from the sender container")
     parser.add_argument("--binary", required=True, type=Path, help="static Linux sender release binary")
     parser.add_argument("--receiver-binary", type=Path, help="receiver-architecture release binary; defaults to --binary")
@@ -324,7 +393,10 @@ def main() -> None:
     args.results.mkdir(parents=True, exist_ok=True)
     if any(args.results.iterdir()):
         raise SystemExit(f"results directory must be empty: {args.results}")
-    host_info = {"sender": identity(args.sender), "receiver": identity(args.receiver)}
+    host_info = {
+        "sender": identity(args.sender, args.sender_proxy_jump),
+        "receiver": identity(args.receiver, args.receiver_proxy_jump),
+    }
     if (
         host_info["sender"]["machine_id_sha256"] == host_info["receiver"]["machine_id_sha256"]
         and not args.allow_same_host_smoke
@@ -368,9 +440,21 @@ def main() -> None:
     try:
         block_index = 0
         for scenario in scenarios:
-            source_hash = create_source(args.sender, work, int(scenario["file_bytes"]))
+            source_hash = create_source(
+                args.sender,
+                work,
+                int(scenario["file_bytes"]),
+                args.sender_proxy_jump,
+            )
             for scenario_block in range(args.blocks):
-                loads = wait_idle((args.sender, args.receiver), args.max_normalized_load, args.idle_timeout)
+                loads = wait_idle(
+                    (
+                        (args.sender, args.sender_proxy_jump),
+                        (args.receiver, args.receiver_proxy_jump),
+                    ),
+                    args.max_normalized_load,
+                    args.idle_timeout,
+                )
                 order = plan[block_index]["order"]
                 for treatment_index, treatment in enumerate(order):
                     result = run_treatment(
@@ -384,7 +468,15 @@ def main() -> None:
                     print(path, flush=True)
                 block_index += 1
     finally:
-        cleanup(args.sender, args.runtime, run_id, work, args.keep_remote, True)
+        cleanup(
+            args.sender,
+            args.runtime,
+            run_id,
+            work,
+            args.keep_remote,
+            True,
+            args.sender_proxy_jump,
+        )
         cleanup(
             args.receiver,
             args.runtime,
@@ -392,6 +484,7 @@ def main() -> None:
             work,
             args.keep_remote,
             args.receiver_mode == "container",
+            args.receiver_proxy_jump,
         )
 
 
