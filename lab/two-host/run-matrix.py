@@ -18,6 +18,7 @@ import subprocess
 import sys
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -376,6 +377,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--keep-remote", action="store_true")
     parser.add_argument("--allow-same-host-smoke", action="store_true")
     parser.add_argument("--smoke", action="store_true", help="run one 1 MiB block per scenario")
+    parser.add_argument("--resume", action="store_true", help="continue only complete blocks from an interrupted preregistered run")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -404,7 +406,10 @@ def main() -> None:
     if len(args.key_file.read_bytes()) != 32:
         raise SystemExit("--key-file must contain exactly 32 bytes")
     args.results.mkdir(parents=True, exist_ok=True)
-    if any(args.results.iterdir()):
+    preregistration_path = args.results / "preregistration.json"
+    if args.resume and not preregistration_path.is_file():
+        raise SystemExit(f"missing preregistration for --resume: {preregistration_path}")
+    if not args.resume and any(args.results.iterdir()):
         raise SystemExit(f"results directory must be empty: {args.results}")
     host_info = {
         "sender": identity(args.sender, args.sender_proxy_jump),
@@ -415,7 +420,14 @@ def main() -> None:
         and not args.allow_same_host_smoke
     ):
         raise SystemExit("sender and receiver are the same Linux machine; use two independent hosts")
-    run_id = uuid.uuid4().hex[:10]
+    previous_preregistration = (
+        json.loads(preregistration_path.read_text()) if args.resume else None
+    )
+    run_id = (
+        str(previous_preregistration["run_id"])
+        if previous_preregistration is not None
+        else uuid.uuid4().hex[:10]
+    )
     work, binary_hashes = stage(args, run_id)
     rng = random.Random(args.seed)
     plan = []
@@ -436,7 +448,7 @@ def main() -> None:
         "run_id": run_id,
         "endpoint_binary_sha256": binary_hashes,
         "hosts": host_info,
-        "scenarios": scenarios,
+        "scenarios": list(scenarios),
         "blocks_per_scenario": args.blocks,
         "treatments": list(TREATMENTS),
         "randomization_seed": args.seed,
@@ -449,9 +461,43 @@ def main() -> None:
             "lossy_best_tcp_over_udp_lower_95pct_min": 1.25,
         },
     }
-    (args.results / "preregistration.json").write_text(
-        json.dumps(preregistration, indent=2) + "\n"
-    )
+    if previous_preregistration is not None:
+        comparable_keys = (
+            "run_id",
+            "endpoint_binary_sha256",
+            "hosts",
+            "scenarios",
+            "blocks_per_scenario",
+            "treatments",
+            "randomization_seed",
+            "udp_sender_rate_mbit",
+            "sender_private_interface_offload_cap_bytes",
+            "plan",
+            "release_gates",
+        )
+        mismatches = [
+            key
+            for key in comparable_keys
+            if previous_preregistration.get(key) != preregistration.get(key)
+        ]
+        if mismatches:
+            raise SystemExit(f"resume provenance mismatch: {', '.join(mismatches)}")
+        continuation_index = len(list(args.results.glob("continuation-*.json"))) + 1
+        (args.results / f"continuation-{continuation_index}.json").write_text(
+            json.dumps(
+                {
+                    "continued_at": datetime.now(timezone.utc).isoformat(),
+                    "reason": "idle gate timeout between complete randomized blocks",
+                    "max_normalized_load": args.max_normalized_load,
+                    "idle_timeout_seconds": args.idle_timeout,
+                    "existing_results": len(list(args.results.glob("result-*.json"))),
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+    else:
+        preregistration_path.write_text(json.dumps(preregistration, indent=2) + "\n")
     try:
         block_index = 0
         for scenario in scenarios:
@@ -462,6 +508,33 @@ def main() -> None:
                 args.sender_proxy_jump,
             )
             for scenario_block in range(args.blocks):
+                block_id = f"two-host-{scenario['name']}-{block_index}"
+                existing_paths = {
+                    treatment: args.results / f"result-{block_id}-{treatment}.json"
+                    for treatment in TREATMENTS
+                }
+                existing = {
+                    treatment: path
+                    for treatment, path in existing_paths.items()
+                    if path.is_file()
+                }
+                if existing:
+                    if len(existing) != len(TREATMENTS):
+                        raise RuntimeError(
+                            f"cannot resume partial randomized block {block_id}: {sorted(existing)}"
+                        )
+                    for treatment, path in existing.items():
+                        result = json.loads(path.read_text())
+                        if (
+                            not result.get("verified")
+                            or result.get("transport") != treatment
+                            or result.get("design", {}).get("block_id") != block_id
+                            or result.get("endpoint_binary_sha256") != binary_hashes
+                        ):
+                            raise RuntimeError(f"invalid completed result in {path}")
+                    print(f"skipping complete block {block_id}", flush=True)
+                    block_index += 1
+                    continue
                 loads = wait_idle(
                     (
                         (args.sender, args.sender_proxy_jump),

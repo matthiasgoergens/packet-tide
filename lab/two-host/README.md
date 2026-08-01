@@ -44,6 +44,12 @@ By default the UDP offered rate equals the emulated bottleneck rate.
 headroom. The selected value is recorded in the preregistration and every result;
 it must be chosen before a confirmatory run, not adjusted from its observations.
 
+If an idle-gate timeout interrupts a run between complete blocks, rerun the same
+command with `--resume` and, if desired, a longer `--idle-timeout`. Continuation
+reuses the original schedule and run ID, validates host and artifact provenance,
+skips only complete three-treatment blocks, rejects partial blocks, and writes a
+numbered continuation record.
+
 The evaluator is the release gate, not just a plotting script. It fails unless
 there are at least ten complete randomized blocks per condition, every transfer
 and digest verifies, all records use one exact binary, and the machine-ID hashes
