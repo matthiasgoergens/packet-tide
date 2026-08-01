@@ -37,6 +37,11 @@ jobs:
       - name: Test
         run: cargo +"$RUST_TOOLCHAIN" test --locked
 
+      - name: Validate release and benchmark tooling
+        run: |
+          bash -n release/check-release.sh
+          python3 -m py_compile lab/two-host/run-matrix.py lab/two-host/evaluate-release.py
+
       - name: Verify clean source package and installation
         run: RUSTUP_TOOLCHAIN="$RUST_TOOLCHAIN" release/check-release.sh
 

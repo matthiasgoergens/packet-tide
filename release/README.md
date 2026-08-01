@@ -54,11 +54,13 @@ remote before the first release; do not add a guessed repository URL to Cargo
 metadata or documentation.
 
 1. Ensure CI passes on the intended release commit.
-2. Set the same stable version in `Cargo.toml` and regenerate `Cargo.lock`.
-3. Run `release/check-release.sh vVERSION` from a clean checkout.
-4. Create an annotated or signed `vVERSION` tag at that commit.
-5. Push the commit and tag to the chosen GitHub remote.
-6. Verify the tag-triggered workflow and its checksums before announcing it.
+2. Run the independent-host matrix and require
+   `lab/two-host/evaluate-release.py RESULT_DIR` to pass.
+3. Set the same stable version in `Cargo.toml` and regenerate `Cargo.lock`.
+4. Run `release/check-release.sh vVERSION` from a clean checkout.
+5. Create an annotated or signed `vVERSION` tag at that commit.
+6. Push the commit and tag to the chosen GitHub remote.
+7. Verify the tag-triggered workflow and its checksums before announcing it.
 
 The workflow refuses a tag that does not exactly match the Cargo package version.
 It uses GitHub's automatically supplied token only to create that repository's

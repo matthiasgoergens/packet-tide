@@ -253,6 +253,9 @@ def main() -> None:
         raise SystemExit("--binary and --key-file must be files")
     if len(args.key_file.read_bytes()) != 32:
         raise SystemExit("--key-file must contain exactly 32 bytes")
+    args.results.mkdir(parents=True, exist_ok=True)
+    if any(args.results.iterdir()):
+        raise SystemExit(f"results directory must be empty: {args.results}")
     host_info = {"sender": identity(args.sender), "receiver": identity(args.receiver)}
     if (
         host_info["sender"]["machine_id_sha256"] == host_info["receiver"]["machine_id_sha256"]
@@ -261,14 +264,46 @@ def main() -> None:
         raise SystemExit("sender and receiver are the same Linux machine; use two independent hosts")
     run_id = uuid.uuid4().hex[:10]
     work, binary_hash = stage(args, run_id)
+    rng = random.Random(args.seed)
+    plan = []
+    block_index = 0
+    for scenario in scenarios:
+        for scenario_block in range(args.blocks):
+            plan.append(
+                {
+                    "scenario": scenario["name"],
+                    "scenario_block": scenario_block,
+                    "block_id": f"two-host-{scenario['name']}-{block_index}",
+                    "order": rng.sample(TREATMENTS, len(TREATMENTS)),
+                }
+            )
+            block_index += 1
+    preregistration = {
+        "schema": 1,
+        "run_id": run_id,
+        "binary_sha256": binary_hash,
+        "hosts": host_info,
+        "scenarios": scenarios,
+        "blocks_per_scenario": args.blocks,
+        "treatments": list(TREATMENTS),
+        "randomization_seed": args.seed,
+        "plan": plan,
+        "release_gates": {
+            "minimum_complete_blocks_per_scenario": 10,
+            "clean_udp_over_best_tcp_upper_95pct_max": 1.05,
+            "lossy_best_tcp_over_udp_lower_95pct_min": 1.25,
+        },
+    }
+    (args.results / "preregistration.json").write_text(
+        json.dumps(preregistration, indent=2) + "\n"
+    )
     try:
-        rng = random.Random(args.seed)
         block_index = 0
         for scenario in scenarios:
             source_hash = create_source(args.sender, work, int(scenario["file_bytes"]))
             for scenario_block in range(args.blocks):
                 loads = wait_idle((args.sender, args.receiver), args.max_normalized_load, args.idle_timeout)
-                order = rng.sample(TREATMENTS, len(TREATMENTS))
+                order = plan[block_index]["order"]
                 for treatment_index, treatment in enumerate(order):
                     result = run_treatment(
                         args, work, run_id, block_index, treatment_index, scenario,

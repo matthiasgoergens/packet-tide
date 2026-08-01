@@ -27,9 +27,19 @@ python3 lab/two-host/run-matrix.py \
   --key-file /secure/path/benchmark.key \
   --results results/v0.1-two-host
 
-python3 lab/analyze-rbd.py results/v0.1-two-host
+python3 lab/two-host/evaluate-release.py results/v0.1-two-host
 ```
 
 Use `--dry-run` to inspect the randomized matrix without contacting either host.
 `--allow-same-host-smoke` exists only to validate orchestration and cannot support
 the independent-machine performance claim.
+
+The evaluator is the release gate, not just a plotting script. It fails unless
+there are at least ten complete randomized blocks per condition, every transfer
+and digest verifies, all records use one exact binary, and the machine-ID hashes
+prove distinct endpoints. Its preregistered one-sided bootstrap gates are:
+
+- clean UDP/best-TCP elapsed-time upper bound at most 1.05;
+- lossy best-TCP/UDP elapsed-time lower bound at least 1.25.
+
+Same-host smoke output is deliberately rejected even when its timing looks good.
