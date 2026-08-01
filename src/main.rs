@@ -689,19 +689,33 @@ struct Pacer {
     bytes_per_second: f64,
     started: Instant,
     bytes_sent: u64,
+    bytes_since_wait: usize,
+    batch_bytes: usize,
 }
 
 impl Pacer {
     fn new(bytes_per_second: f64) -> Self {
+        // Sleeping once per datagram makes sub-millisecond scheduler wake-up
+        // overhead part of the configured rate. Pace in short bounded batches
+        // instead: this keeps the long-run byte rate while allowing the kernel
+        // qdisc and NIC to handle a small burst efficiently.
+        let batch_bytes = (bytes_per_second * 0.002).clamp(1_200.0, 65_536.0) as usize;
         Self {
             bytes_per_second,
             started: Instant::now(),
             bytes_sent: 0,
+            bytes_since_wait: 0,
+            batch_bytes,
         }
     }
 
     fn account_and_wait(&mut self, bytes: usize) {
         self.bytes_sent += bytes as u64;
+        self.bytes_since_wait += bytes;
+        if self.bytes_since_wait < self.batch_bytes {
+            return;
+        }
+        self.bytes_since_wait = 0;
         let target = Duration::from_secs_f64(self.bytes_sent as f64 / self.bytes_per_second);
         let elapsed = self.started.elapsed();
         if target > elapsed {
@@ -1454,5 +1468,12 @@ mod tests {
     fn tcp4_transport_round_trips_through_the_wire_name() {
         assert_eq!(Transport::parse("tcp4").unwrap(), Transport::Tcp4);
         assert_eq!(Transport::Tcp4.wire_name(), "TCP4");
+    }
+
+    #[test]
+    fn pacer_uses_two_millisecond_bounded_batches() {
+        assert_eq!(Pacer::new(12_500_000.0).batch_bytes, 25_000);
+        assert_eq!(Pacer::new(1.0).batch_bytes, 1_200);
+        assert_eq!(Pacer::new(1_000_000_000.0).batch_bytes, 65_536);
     }
 }
