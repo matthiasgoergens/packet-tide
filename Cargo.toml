@@ -8,7 +8,7 @@ description = "Experimental object-oriented file transfer over TCP and UDP"
 readme = "README.md"
 keywords = ["udp", "file-transfer", "networking"]
 categories = ["command-line-utilities", "network-programming"]
-include = ["src/**", "Cargo.toml", "Cargo.lock", "README.md", "DESIGN.md", "LICENSE", "release/README.md"]
+include = ["/src/**", "/Cargo.toml", "/Cargo.lock", "/README.md", "/DESIGN.md", "/LICENSE", "/release/README.md"]
 
 [[bin]]
 name = "tsunami-udp"
