@@ -1,0 +1,7 @@
+{
+  "continued_at": "2026-08-01T15:15:37.579206+00:00",
+  "reason": "idle gate timeout between complete randomized blocks",
+  "max_normalized_load": 0.75,
+  "idle_timeout_seconds": 3600.0,
+  "existing_results": 15
+}
