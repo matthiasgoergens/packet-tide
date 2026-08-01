@@ -235,10 +235,15 @@ exit 1
     loss = float(scenario["loss_percent"])
     netem_loss = "" if loss == 0 else f" loss random {loss}%"
     seed = args.seed + block_index * 10 + treatment_index
+    sender_rate_mbit = (
+        args.udp_rate_mbit
+        if treatment == "udp" and args.udp_rate_mbit is not None
+        else scenario["rate_mbit"]
+    )
     sender_script = f"""
 nice -n 10 ionice -c2 -n7 {runtime} run --name {quote(sender_name)} --cap-add NET_ADMIN \
   -v {quote(work)}:/work:z {image} sh -lc \
-  {quote(f'iface=$(ip route show default | head -n1 | cut -d " " -f5); test -n "$iface"; tc qdisc replace dev "$iface" root netem limit 10000 delay {scenario["rtt_ms"]}ms{netem_loss} rate {scenario["rate_mbit"]}mbit seed {seed} && exec /work/tsunami-udp send --connect {args.receiver_address}:{control_port} --udp-target {args.receiver_address}:{udp_port} --file /work/source-{scenario["file_bytes"]}.bin --transport {treatment} --rate-mbps {scenario["rate_mbit"]} --repair-cooldown-ms {2 * float(scenario["rtt_ms"]) + 50:.0f} --key-file /work/auth.key')}
+  {quote(f'iface=$(ip route show default | head -n1 | cut -d " " -f5); test -n "$iface"; tc qdisc replace dev "$iface" root netem limit 10000 delay {scenario["rtt_ms"]}ms{netem_loss} rate {scenario["rate_mbit"]}mbit seed {seed} && exec /work/tsunami-udp send --connect {args.receiver_address}:{control_port} --udp-target {args.receiver_address}:{udp_port} --file /work/source-{scenario["file_bytes"]}.bin --transport {treatment} --rate-mbps {sender_rate_mbit} --repair-cooldown-ms {2 * float(scenario["rtt_ms"]) + 50:.0f} --key-file /work/auth.key')}
 """
     sent = remote(
         args.sender,
@@ -329,6 +334,7 @@ nice -n 10 ionice -c2 -n7 {runtime} run --name {quote(sender_name)} --cap-add NE
             "source_sha256": source_hash,
             "output_sha256": output_hash,
             "scenario": scenario,
+            "sender_rate_mbit": sender_rate_mbit,
             "design": {
                 "block_id": f"two-host-{scenario['name']}-{block_index}",
                 "block_order": block_index,
@@ -358,6 +364,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=5101)
     parser.add_argument("--base-port", type=int, default=24000)
     parser.add_argument("--max-normalized-load", type=float, default=0.75)
+    parser.add_argument(
+        "--udp-rate-mbit",
+        type=float,
+        help="optional UDP offered rate, independent of the emulated bottleneck rate",
+    )
     parser.add_argument("--idle-timeout", type=float, default=300.0)
     parser.add_argument("--runtime", default="podman")
     parser.add_argument("--image", default="docker.io/library/archlinux:base-devel")
@@ -377,6 +388,8 @@ def main() -> None:
         scenarios = tuple({**scenario, "file_bytes": 1_048_576} for scenario in DEFAULT_SCENARIOS)
     if args.blocks < 2 and not (args.smoke or args.allow_same_host_smoke):
         raise SystemExit("--blocks must be at least 2")
+    if args.udp_rate_mbit is not None and args.udp_rate_mbit <= 0:
+        raise SystemExit("--udp-rate-mbit must be positive")
     if args.dry_run:
         rng = random.Random(args.seed)
         print(json.dumps([
@@ -427,6 +440,7 @@ def main() -> None:
         "blocks_per_scenario": args.blocks,
         "treatments": list(TREATMENTS),
         "randomization_seed": args.seed,
+        "udp_sender_rate_mbit": args.udp_rate_mbit,
         "plan": plan,
         "release_gates": {
             "minimum_complete_blocks_per_scenario": 10,

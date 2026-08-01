@@ -38,6 +38,11 @@ Use `--dry-run` to inspect the randomized matrix without contacting either host.
 `--allow-same-host-smoke` exists only to validate orchestration and cannot support
 the independent-machine performance claim.
 
+By default the UDP offered rate equals the emulated bottleneck rate.
+`--udp-rate-mbit RATE` separates those values when testing explicit pacing
+headroom. The selected value is recorded in the preregistration and every result;
+it must be chosen before a confirmatory run, not adjusted from its observations.
+
 The evaluator is the release gate, not just a plotting script. It fails unless
 there are at least ten complete randomized blocks per condition, every transfer
 and digest verifies, all records use one exact binary, and the machine-ID hashes
