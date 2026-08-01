@@ -5,6 +5,7 @@ use std::error::Error;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -982,6 +983,7 @@ fn receive_udp(
     }
 
     let (file, mut state) = ResumeState::open(destination, hello.size, hello.chunks, &hello.hash)?;
+    let mut mapped_file = MappedFile::new(&file, hello.size)?;
     control.send("READY")?;
     for (index, word) in state.bitmap.iter().copied().enumerate() {
         if word != 0 {
@@ -1061,11 +1063,8 @@ fn receive_udp(
                     if !repair && highest.is_some_and(|frontier| sequence < frontier) {
                         reordering_observed = true;
                     }
-                    write_all_at(
-                        &file,
-                        &packet[HEADER_SIZE..HEADER_SIZE + payload_len],
-                        offset,
-                    )?;
+                    mapped_file
+                        .write_at(&packet[HEADER_SIZE..HEADER_SIZE + payload_len], offset)?;
                     bitmap_insert(&mut state.bitmap, sequence);
                     state.received_count += 1;
                     checkpoint_dirty = true;
@@ -1079,6 +1078,7 @@ fn receive_udp(
                 ) => {}
             Err(error) => {
                 if checkpoint_dirty {
+                    mapped_file.flush()?;
                     state.checkpoint(&file)?;
                 }
                 return Err(error.into());
@@ -1093,6 +1093,7 @@ fn receive_udp(
                 }
                 ControlEvent::Error(error) => {
                     if checkpoint_dirty {
+                        mapped_file.flush()?;
                         state.checkpoint(&file)?;
                     }
                     return Err(error.into());
@@ -1101,6 +1102,7 @@ fn receive_udp(
         }
 
         if ended && state.received_count == hello.chunks {
+            mapped_file.flush()?;
             file.sync_all()?;
             let actual_hash = hash_open_file(&file)?;
             if actual_hash != hello.hash {
@@ -1114,6 +1116,7 @@ fn receive_udp(
         }
 
         if checkpoint_dirty && last_checkpoint.elapsed() >= RESUME_CHECKPOINT_INTERVAL {
+            mapped_file.flush()?;
             state.checkpoint(&file)?;
             checkpoint_dirty = false;
             last_checkpoint = Instant::now();
@@ -1260,6 +1263,79 @@ fn write_all_at(file: &File, mut bytes: &[u8], mut offset: u64) -> AnyResult<()>
         offset += count as u64;
     }
     Ok(())
+}
+
+struct MappedFile {
+    address: *mut libc::c_void,
+    len: usize,
+}
+
+impl MappedFile {
+    fn new(file: &File, len: u64) -> AnyResult<Self> {
+        let len = usize::try_from(len).map_err(|_| "file is too large to map on this platform")?;
+        if len == 0 {
+            return Ok(Self {
+                address: std::ptr::null_mut(),
+                len,
+            });
+        }
+        // SAFETY: the file has already been extended to `len`; the returned
+        // mapping is owned by this value and unmapped exactly once in Drop.
+        let address = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        if address == libc::MAP_FAILED {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(Self { address, len })
+    }
+
+    fn write_at(&mut self, bytes: &[u8], offset: u64) -> AnyResult<()> {
+        let offset = usize::try_from(offset).map_err(|_| "file offset is too large")?;
+        let end = offset
+            .checked_add(bytes.len())
+            .ok_or("mapped write offset overflow")?;
+        if end > self.len {
+            return Err("mapped write extends beyond the file".into());
+        }
+        // SAFETY: the bounds check above proves both regions are valid and the
+        // packet buffer cannot overlap the file mapping.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                self.address.cast::<u8>().add(offset),
+                bytes.len(),
+            );
+        }
+        Ok(())
+    }
+
+    fn flush(&self) -> AnyResult<()> {
+        if self.len == 0 {
+            return Ok(());
+        }
+        // SAFETY: `address..address+len` remains a live MAP_SHARED mapping.
+        if unsafe { libc::msync(self.address, self.len, libc::MS_SYNC) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(())
+    }
+}
+
+impl Drop for MappedFile {
+    fn drop(&mut self) {
+        if self.len != 0 {
+            // SAFETY: this mapping is owned by self and Drop runs once.
+            let _ = unsafe { libc::munmap(self.address, self.len) };
+        }
+    }
 }
 
 fn temporary_path(destination: &Path) -> PathBuf {
@@ -1475,5 +1551,25 @@ mod tests {
         assert_eq!(Pacer::new(12_500_000.0).batch_bytes, 25_000);
         assert_eq!(Pacer::new(1.0).batch_bytes, 1_200);
         assert_eq!(Pacer::new(1_000_000_000.0).batch_bytes, 65_536);
+    }
+
+    #[test]
+    fn mapped_file_writes_are_visible_after_flush() {
+        let path =
+            std::env::temp_dir().join(format!("tsunami-udp-mapped-file-{}", std::process::id()));
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        file.set_len(16).unwrap();
+        let mut mapped = MappedFile::new(&file, 16).unwrap();
+        mapped.write_at(b"payload", 4).unwrap();
+        mapped.flush().unwrap();
+        drop(mapped);
+        assert_eq!(&fs::read(&path).unwrap()[4..11], b"payload");
+        fs::remove_file(path).unwrap();
     }
 }
