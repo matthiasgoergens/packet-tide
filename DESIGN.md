@@ -145,9 +145,8 @@ file and an atomically replaced `.part.map`. Checkpoint ordering is data
 `fdatasync`, then map write and `fsync`, then map rename. A crash before the rename
 leaves the previous valid map and merely causes redundant retransmission. Exact
 metadata and map length are validated on restart; a mismatched or torn map is not
-trusted. Checkpoints occur at most once per five seconds, while live missing
-reports can remain more frequent. A crash may therefore cause up to roughly five
-seconds of recent chunks to be retransmitted.
+trusted. Checkpoints occur at most once per second, while live missing reports can
+remain more frequent.
 
 Memory has explicit ceilings. Each endpoint rejects objects requiring more than a
 64 MiB receipt bitmap: 536,870,912 chunks, or about 586 GiB with the current
