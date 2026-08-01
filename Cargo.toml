@@ -2,8 +2,17 @@
 name = "tsunami-udp"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
 license = "MIT"
 description = "Experimental object-oriented file transfer over TCP and UDP"
+readme = "README.md"
+keywords = ["udp", "file-transfer", "networking"]
+categories = ["command-line-utilities", "network-programming"]
+include = ["src/**", "Cargo.toml", "Cargo.lock", "README.md", "DESIGN.md", "LICENSE"]
+
+[[bin]]
+name = "tsunami-udp"
+path = "src/main.rs"
 
 [dependencies]
 sha2 = "0.10"
@@ -11,3 +20,4 @@ sha2 = "0.10"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+strip = "symbols"

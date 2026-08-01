@@ -39,6 +39,7 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 BINARY="$ROOT/target/release/tsunami-udp"
 DATA=/tmp/tsunami-udp-lab/data
 RESULTS=/tmp/tsunami-udp-lab/results
+AUTH_KEY=${TSU_AUTH_KEY_FILE:-$DATA/auth.key}
 SOURCE="$DATA/source-$FILE_BYTES-seed1.bin"
 OUTPUT="$DATA/output-$TRANSPORT.bin"
 RECEIVER_LOG="$RESULTS/receiver-$TRANSPORT.log"
@@ -56,6 +57,9 @@ EXPECTED_TREATMENTS=${TSU_EXPECTED_TREATMENTS:-$TRANSPORT}
 RESULT_JSON="$RESULTS/result-$BLOCK_ID-$TRANSPORT.json"
 
 mkdir -p "$DATA" "$RESULTS"
+if [[ ! -f $AUTH_KEY ]]; then
+  "$BINARY" keygen --out "$AUTH_KEY"
+fi
 if [[ ! -f $SOURCE ]] || [[ $(stat -c %s "$SOURCE") -ne $FILE_BYTES ]]; then
   python3 "$ROOT/lab/generate-data.py" "$SOURCE" "$FILE_BYTES" 1
 fi
@@ -130,7 +134,7 @@ else
     "$BINARY" receive \
     --listen 10.210.2.2:9000 \
     --udp 10.210.2.2:9001 \
-    --out "$OUTPUT" >"$RECEIVER_LOG" 2>&1 &
+    --out "$OUTPUT" --key-file "$AUTH_KEY" >"$RECEIVER_LOG" 2>&1 &
   receiver_pid=$!
 
   for _ in {1..50}; do
@@ -147,7 +151,8 @@ else
     --file "$SOURCE" \
     --transport "$PROGRAM_TRANSPORT" \
     --rate-mbps "$SEND_RATE_MBIT" \
-    --repair-cooldown-ms "$REPAIR_COOLDOWN_MS" >"$SENDER_JSON"
+    --repair-cooldown-ms "$REPAIR_COOLDOWN_MS" \
+    --key-file "$AUTH_KEY" >"$SENDER_JSON"
 
   wait "$receiver_pid"
   receiver_pid=''

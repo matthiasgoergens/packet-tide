@@ -2,7 +2,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-const MAGIC: &[u8; 8] = b"TSUMAP2\0";
+const MAGIC: &[u8; 8] = b"TSUMAP3\0";
 const HEADER_LEN: usize = 8 + 8 + 8 + 32;
 
 pub(crate) struct ResumeState {
@@ -28,26 +28,25 @@ impl ResumeState {
         let bitmap_words = usize::try_from(chunks.div_ceil(64))
             .map_err(|_| "file has too many chunks for this platform")?;
 
-        if let Some(bitmap) = load_map(&map_path, size, chunks, hash, bitmap_words)? {
-            if part_path
+        if let Some(bitmap) = load_map(&map_path, size, chunks, hash, bitmap_words)?
+            && part_path
                 .metadata()
                 .is_ok_and(|metadata| metadata.len() == size)
-            {
-                let received_count = bitmap.iter().map(|word| word.count_ones() as u64).sum();
-                let file = OpenOptions::new().read(true).write(true).open(&part_path)?;
-                return Ok((
-                    file,
-                    Self {
-                        bitmap,
-                        received_count,
-                        part_path,
-                        map_path,
-                        size,
-                        chunks,
-                        hash,
-                    },
-                ));
-            }
+        {
+            let received_count = bitmap.iter().map(|word| word.count_ones() as u64).sum();
+            let file = OpenOptions::new().read(true).write(true).open(&part_path)?;
+            return Ok((
+                file,
+                Self {
+                    bitmap,
+                    received_count,
+                    part_path,
+                    map_path,
+                    size,
+                    chunks,
+                    hash,
+                },
+            ));
         }
 
         let file = OpenOptions::new()
@@ -147,7 +146,7 @@ fn load_map(
         stream.read_exact(&mut bytes)?;
         bitmap.push(u64::from_be_bytes(bytes));
     }
-    if chunks % 64 != 0
+    if chunks & 63 != 0
         && bitmap.last().is_some_and(|word| {
             let valid_mask = (1_u64 << (chunks % 64)) - 1;
             word & !valid_mask != 0

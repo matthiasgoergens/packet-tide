@@ -11,9 +11,11 @@ CONTROL_PORT=$((22000 + $$ % 15000))
 UDP_PORT=$((CONTROL_PORT + 1))
 SOURCE="$WORK_DIR/source.bin"
 OUTPUT="$WORK_DIR/output.bin"
+AUTH_KEY="$WORK_DIR/auth.key"
 
 mkdir -p "$WORK_DIR"
 python3 "$ROOT/lab/generate-data.py" "$SOURCE" "$FILE_BYTES" 2718
+"$BINARY" keygen --out "$AUTH_KEY"
 
 receiver=''
 sender=''
@@ -26,13 +28,14 @@ trap cleanup EXIT INT TERM
 "$BINARY" receive \
   --listen "127.0.0.1:$CONTROL_PORT" \
   --udp "127.0.0.1:$UDP_PORT" \
-  --out "$OUTPUT" >"$WORK_DIR/receiver-interrupted.log" 2>&1 &
+  --out "$OUTPUT" --key-file "$AUTH_KEY" >"$WORK_DIR/receiver-interrupted.log" 2>&1 &
 receiver=$!
 sleep 0.2
 "$BINARY" send \
   --connect "127.0.0.1:$CONTROL_PORT" \
   --udp-target "127.0.0.1:$UDP_PORT" \
   --file "$SOURCE" --transport udp --rate-mbps 50 \
+  --key-file "$AUTH_KEY" \
   >"$WORK_DIR/sender-interrupted.json" 2>"$WORK_DIR/sender-interrupted.log" &
 sender=$!
 sleep "$INTERRUPT_SECONDS"
@@ -52,7 +55,7 @@ import sys
 from pathlib import Path
 
 raw = Path(sys.argv[1]).read_bytes()
-assert raw[:8] == b"TSUMAP2\0"
+assert raw[:8] == b"TSUMAP3\0"
 size, chunks = struct.unpack(">QQ", raw[8:24])
 words = struct.iter_unpack(">Q", raw[56:])
 received = sum(word[0].bit_count() for word in words)
@@ -70,13 +73,14 @@ PY
   "$BINARY" receive \
     --listen "127.0.0.1:$CONTROL_PORT" \
     --udp "127.0.0.1:$UDP_PORT" \
-    --out "$OUTPUT" >"$WORK_DIR/receiver-resumed.log" 2>&1 &
+    --out "$OUTPUT" --key-file "$AUTH_KEY" >"$WORK_DIR/receiver-resumed.log" 2>&1 &
 receiver=$!
 sleep 0.2
 "$BINARY" send \
   --connect "127.0.0.1:$CONTROL_PORT" \
   --udp-target "127.0.0.1:$UDP_PORT" \
   --file "$SOURCE" --transport udp --rate-mbps 200 \
+  --key-file "$AUTH_KEY" \
   >"$WORK_DIR/sender-resumed.json"
 wait "$receiver"
 receiver=''
@@ -87,13 +91,14 @@ test ! -e "$OUTPUT.part.map"
 "$BINARY" receive \
   --listen "127.0.0.1:$CONTROL_PORT" \
   --udp "127.0.0.1:$UDP_PORT" \
-  --out "$OUTPUT" >"$WORK_DIR/receiver-complete-retry.log" 2>&1 &
+  --out "$OUTPUT" --key-file "$AUTH_KEY" >"$WORK_DIR/receiver-complete-retry.log" 2>&1 &
 receiver=$!
 sleep 0.2
 "$BINARY" send \
   --connect "127.0.0.1:$CONTROL_PORT" \
   --udp-target "127.0.0.1:$UDP_PORT" \
   --file "$SOURCE" --transport udp --rate-mbps 200 \
+  --key-file "$AUTH_KEY" \
   >"$WORK_DIR/sender-complete-retry.json"
 wait "$receiver"
 receiver=''
@@ -117,7 +122,7 @@ resumed = json.loads(Path(sys.argv[2]).read_text())
 complete = json.loads(Path(sys.argv[3]).read_text())
 time_output = Path(sys.argv[4]).read_text()
 peak_rss = int(re.search(r"Maximum resident set size \(kbytes\): (\d+)", time_output).group(1))
-fresh_ip_bytes = checkpoint["file_bytes"] + checkpoint["chunks"] * (19 + 28)
+fresh_ip_bytes = checkpoint["file_bytes"] + checkpoint["chunks"] * (44 + 28)
 assert resumed["resumed_chunks"] == checkpoint["durable_chunks_after_kill"]
 assert 0 < resumed["udp_ip_bytes_offered"] < fresh_ip_bytes
 assert complete["resumed_chunks"] == checkpoint["chunks"]

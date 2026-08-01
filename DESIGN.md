@@ -77,7 +77,14 @@ TCP is a reasonable control transport for the first version. Its traffic volume
 is tiny compared with the UDP data stream, and it removes ambiguity around setup
 and final completion.
 
-### Transfer setup
+### Transfer setup and authentication
+
+Version 0.1 requires a shared 256-bit key file. The receiver first supplies a
+fresh random challenge; both peers authenticate a transcript containing fresh
+nonces and the complete transfer metadata. Direction-separated session keys are
+derived from that transcript. Authentication completes before the receiver
+creates directories, output files, or receipt maps. There is no insecure TSU1
+compatibility mode.
 
 The sender proposes:
 
@@ -110,14 +117,20 @@ Each data packet contains at least:
 - payload length;
 - payload bytes.
 
+The fixed header and payload are covered by a 128-bit truncated HMAC-SHA256 tag
+under a per-transfer UDP key. The receiver verifies the tag before writing data
+or changing its receipt bitmap. TCP4 data-lane greetings and every control
+message are also authenticated; control messages carry direction-local sequence
+numbers so replay and reordering fail closed.
+
 The byte offset is derived from `chunk_number * negotiated_payload_size`. The
 final chunk may be shorter. A default datagram size near 1,200 bytes avoids IP
 fragmentation across typical paths; "big" should mean close to the safe path MTU,
 not a maximum-size 65,507-byte UDP payload.
 
-The first version may rely on the UDP checksum plus final whole-file hash rather
-than adding a checksum to every chunk. Per-packet authentication belongs with the
-later security work.
+The UDP checksum remains useful for accidental corruption, while the packet MAC
+provides active-attack integrity. The final whole-file hash is authenticated as
+part of the setup transcript.
 
 ### Receiver state
 
@@ -218,7 +231,11 @@ This is about avoiding self-inflicted waste even when fairness is not a goal.
 - Retransmissions require sender bookkeeping and at least one feedback round trip.
 - A fixed chunk bitmap scales with file size, though one bit per roughly 1,200
   bytes is manageable for ordinary files.
-- Plain UDP data is neither encrypted nor authenticated.
+- File contents and metadata are authenticated but not encrypted.
+- The PSK protocol provides no forward secrecy and one key identifies a peer,
+  not an individual user.
+- Dropping or flooding traffic can still deny service; authentication does not
+  make UDP available under attack.
 - NAT traversal, path migration, directory trees, metadata preservation, sparse
   files, and rsync-style reuse are out of scope initially.
 
@@ -231,7 +248,8 @@ reference needed to decide whether fountain coding is actually beneficial.
 2. Reuse existing destination data through content-addressed or content-defined
    chunks.
 3. Add automatic rate adaptation while retaining a fixed-rate override.
-4. Authenticate and encrypt control and data traffic.
+4. Optionally add confidentiality and forward secrecy using an audited secure
+   transport rather than extending the MAC-only construction ad hoc.
 5. Replace selective retransmission, optionally, with systematic fountain coding:
    send original symbols first, then repair symbols.
 6. Bound fountain-code memory and decoding cost by using independent generations,
