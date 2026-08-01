@@ -677,10 +677,11 @@ fn build_packet(
         }
         read += count;
     }
-    let mut authenticated = Vec::with_capacity(28 + payload_len);
-    authenticated.extend_from_slice(&packet[..28]);
-    authenticated.extend_from_slice(&packet[HEADER_SIZE..HEADER_SIZE + payload_len]);
-    let tag = auth::udp_tag(&auth.udp, &authenticated);
+    let tag = auth::udp_tag_parts(
+        &auth.udp,
+        &packet[..28],
+        &packet[HEADER_SIZE..HEADER_SIZE + payload_len],
+    );
     packet[28..44].copy_from_slice(&tag);
     Ok(HEADER_SIZE + payload_len)
 }
@@ -1029,10 +1030,12 @@ fn receive_udp(
                 {
                     continue;
                 }
-                let mut authenticated = Vec::with_capacity(28 + payload_len);
-                authenticated.extend_from_slice(&packet[..28]);
-                authenticated.extend_from_slice(&packet[HEADER_SIZE..count]);
-                if !auth::verify_udp_tag(&session_auth.udp, &authenticated, &packet[28..44]) {
+                if !auth::verify_udp_tag_parts(
+                    &session_auth.udp,
+                    &packet[..28],
+                    &packet[HEADER_SIZE..count],
+                    &packet[28..44],
+                ) {
                     continue;
                 }
                 let offset = sequence * PAYLOAD_SIZE as u64;

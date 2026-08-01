@@ -261,13 +261,28 @@ pub(crate) fn lane_mac(key: &[u8; 32], session: &[u8; 16], lane: usize) -> [u8; 
     )
 }
 
+#[cfg(test)]
 pub(crate) fn udp_tag(key: &[u8; 32], packet_without_tag: &[u8]) -> [u8; UDP_TAG_LEN] {
-    let full = hmac_sha256(key, &joined(b"tsu2 udp\0", &[packet_without_tag]));
+    udp_tag_parts(key, packet_without_tag, &[])
+}
+
+pub(crate) fn udp_tag_parts(key: &[u8; 32], header: &[u8], payload: &[u8]) -> [u8; UDP_TAG_LEN] {
+    let full = hmac_sha256_parts(key, &[b"tsu2 udp\0", header, payload]);
     full[..UDP_TAG_LEN].try_into().expect("fixed tag length")
 }
 
+#[cfg(test)]
 pub(crate) fn verify_udp_tag(key: &[u8; 32], packet_without_tag: &[u8], tag: &[u8]) -> bool {
     constant_time_eq(&udp_tag(key, packet_without_tag), tag)
+}
+
+pub(crate) fn verify_udp_tag_parts(
+    key: &[u8; 32],
+    header: &[u8],
+    payload: &[u8],
+    tag: &[u8],
+) -> bool {
+    constant_time_eq(&udp_tag_parts(key, header, payload), tag)
 }
 
 pub(crate) fn constant_time_verify(left: &[u8], right: &[u8]) -> bool {
@@ -345,6 +360,10 @@ fn joined(prefix: &[u8], parts: &[&[u8]]) -> Vec<u8> {
 }
 
 fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
+    hmac_sha256_parts(key, &[message])
+}
+
+fn hmac_sha256_parts(key: &[u8], messages: &[&[u8]]) -> [u8; 32] {
     const BLOCK: usize = 64;
     let mut normalized = [0_u8; BLOCK];
     if key.len() > BLOCK {
@@ -360,7 +379,9 @@ fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
     }
     let mut inner = Sha256::new();
     inner.update(inner_pad);
-    inner.update(message);
+    for message in messages {
+        inner.update(message);
+    }
     let inner = inner.finalize();
     let mut outer = Sha256::new();
     outer.update(outer_pad);
