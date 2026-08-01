@@ -1,0 +1,48 @@
+{
+  "claim": "authenticated v0.1 clean-path parity and lossy-path advantage between two independent Linux machines",
+  "conditions": {
+    "clean": {
+      "complete_blocks": 12,
+      "decision": "fail",
+      "estimand": "geometric_mean(udp_time / best_tcp_time)",
+      "estimate": 1.0442632376666792,
+      "one_sided_95pct_upper": 1.0725028488248283,
+      "threshold_max": 1.05
+    },
+    "lossy": {
+      "complete_blocks": 12,
+      "decision": "pass",
+      "estimand": "geometric_mean(best_tcp_time / udp_time)",
+      "estimate": 2.561089869954582,
+      "one_sided_95pct_lower": 2.163630318513519,
+      "threshold_min": 1.25
+    }
+  },
+  "decision": "not_established",
+  "endpoint_binary_sha256": {
+    "receiver": "4f66bd6cfffd58132dffb5d5b0447891c4a11535a03776d8061f69dcfded73c9",
+    "sender": "ac013db6e5d2e649125beb6cd0ca8fae96995d396bbf825af0c0651a285755be"
+  },
+  "failures": [
+    "clean: upper bound 1.072503 exceeds 1.05"
+  ],
+  "host_pairs": [
+    [
+      "11c50d5e10081472a04cd917d7047b1c6ef7c6cab220e2675810cf924c643513",
+      "798d0e6dbf018efcea57a2d1e4a9171f9367fab22ed306908ba3ea67a4a00ef1"
+    ]
+  ],
+  "requirements": {
+    "bootstrap_replicates": 10000,
+    "bootstrap_seed": 0,
+    "distinct_linux_machine_ids": true,
+    "minimum_complete_blocks_per_condition": 10,
+    "required_treatments": [
+      "tcp",
+      "tcp4",
+      "udp"
+    ],
+    "same_endpoint_artifacts_all_treatments": true
+  },
+  "sender_binary_sha256": "ac013db6e5d2e649125beb6cd0ca8fae96995d396bbf825af0c0651a285755be"
+}
