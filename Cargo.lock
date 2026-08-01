@@ -77,7 +77,6 @@ dependencies = [
 name = "tsunami-udp"
 version = "0.1.0"
 dependencies = [
- "libc",
  "sha2",
 ]
 

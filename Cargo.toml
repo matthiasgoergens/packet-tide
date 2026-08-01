@@ -15,7 +15,6 @@ name = "tsunami-udp"
 path = "src/main.rs"
 
 [dependencies]
-libc = "0.2"
 sha2 = "0.10"
 
 [profile.release]
