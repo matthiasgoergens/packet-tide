@@ -83,6 +83,7 @@ def main() -> None:
     failures: list[str] = []
     blocks: dict[str, list[dict]] = defaultdict(list)
     binary_hashes: set[str] = set()
+    endpoint_binary_pairs: set[tuple[str, str]] = set()
     host_pairs: set[tuple[str, str]] = set()
     randomization_seeds: set[int] = set()
 
@@ -134,14 +135,17 @@ def main() -> None:
             sender_id = result["hosts"]["sender"]["machine_id_sha256"]
             receiver_id = result["hosts"]["receiver"]["machine_id_sha256"]
             binary_hash = result["binary_sha256"]
+            endpoint_hashes = result["endpoint_binary_sha256"]
+            endpoint_pair = (str(endpoint_hashes["sender"]), str(endpoint_hashes["receiver"]))
             randomization_seed = int(design["randomization_seed"])
-        except (json.JSONDecodeError, KeyError, TypeError) as error:
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
             failures.append(f"{path.name}: invalid result structure ({error})")
             continue
         if sender_id == receiver_id:
             failures.append(f"{path.name}: sender and receiver are the same machine")
         host_pairs.add((str(sender_id), str(receiver_id)))
         binary_hashes.add(str(binary_hash))
+        endpoint_binary_pairs.add(endpoint_pair)
         randomization_seeds.add(randomization_seed)
         if transport not in REQUIRED_TREATMENTS:
             failures.append(f"{path.name}: unexpected treatment {transport!r}")
@@ -154,7 +158,11 @@ def main() -> None:
     if len(host_pairs) != 1:
         failures.append(f"expected one consistent ordered host pair, observed {len(host_pairs)}")
     if len(binary_hashes) != 1:
-        failures.append(f"expected one exact release binary, observed {len(binary_hashes)} hashes")
+        failures.append(f"expected one exact sender binary, observed {len(binary_hashes)} hashes")
+    if len(endpoint_binary_pairs) != 1:
+        failures.append(
+            f"expected one consistent sender/receiver artifact pair, observed {len(endpoint_binary_pairs)}"
+        )
     if len(randomization_seeds) != 1:
         failures.append(f"expected one randomization seed, observed {len(randomization_seeds)}")
 
@@ -277,17 +285,22 @@ def main() -> None:
             "required_treatments": sorted(REQUIRED_TREATMENTS),
             "bootstrap_replicates": BOOTSTRAP_REPLICATES,
             "bootstrap_seed": BOOTSTRAP_SEED,
-            "same_binary_all_treatments": len(binary_hashes) == 1,
+            "same_endpoint_artifacts_all_treatments": len(endpoint_binary_pairs) == 1,
             "distinct_linux_machine_ids": bool(host_pairs) and all(left != right for left, right in host_pairs),
         },
-        "binary_sha256": next(iter(binary_hashes)) if len(binary_hashes) == 1 else None,
+        "sender_binary_sha256": next(iter(binary_hashes)) if len(binary_hashes) == 1 else None,
+        "endpoint_binary_sha256": (
+            {"sender": next(iter(endpoint_binary_pairs))[0], "receiver": next(iter(endpoint_binary_pairs))[1]}
+            if len(endpoint_binary_pairs) == 1
+            else None
+        ),
         "host_pairs": sorted([list(pair) for pair in host_pairs]),
         "conditions": conditions,
         "failures": sorted(set(failures)),
     }
     if preregistration:
-        if preregistration.get("binary_sha256") != evidence["binary_sha256"]:
-            failures.append("measured binary differs from preregistered binary")
+        if preregistration.get("endpoint_binary_sha256") != evidence["endpoint_binary_sha256"]:
+            failures.append("measured endpoint artifacts differ from preregistered artifacts")
         preregistered_hosts = preregistration.get("hosts", {})
         try:
             preregistered_pair = (

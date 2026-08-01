@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Run an authenticated, randomized transfer matrix across two Linux hosts.
 
-The script creates and removes one Podman container per endpoint/treatment.  Any
-netem qdisc lives only on the sender container's ephemeral eth0, never on a host
-NIC.  The physical machines therefore need no manually prepared namespaces.
+The sender runs in an ephemeral Podman container whose private interface carries
+the netem qdisc. The receiver can run host-native, so a small ARM Linux endpoint
+does not need a container runtime. No host NIC or manually prepared namespace is
+used.
 """
 
 from __future__ import annotations
@@ -33,6 +34,21 @@ def run(command: list[str], *, input_text: str | None = None, check: bool = True
 
 def remote(host: str, script: str, *, check: bool = True) -> subprocess.CompletedProcess[str]:
     return run(["ssh", host, "bash", "-s"], input_text="set -euo pipefail\n" + script, check=check)
+
+
+def start_remote(host: str, script: str) -> subprocess.Popen[str]:
+    process = subprocess.Popen(
+        ["ssh", host, "bash", "-s"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert process.stdin is not None
+    process.stdin.write("set -euo pipefail\n" + script)
+    process.stdin.close()
+    process.stdin = None
+    return process
 
 
 def quote(value: object) -> str:
@@ -73,18 +89,28 @@ def copy_to(local: Path, host: str, destination: str) -> None:
     run(["scp", "-q", str(local), f"{host}:{destination}"])
 
 
-def stage(args: argparse.Namespace, run_id: str) -> tuple[str, str]:
+def stage(args: argparse.Namespace, run_id: str) -> tuple[str, dict[str, str]]:
     work = f"/tmp/tsunami-two-host/{run_id}"
-    for host in (args.sender, args.receiver):
+    endpoint_binaries = {
+        "sender": args.binary,
+        "receiver": args.receiver_binary or args.binary,
+    }
+    for endpoint, host in (("sender", args.sender), ("receiver", args.receiver)):
         remote(host, f"mkdir -p {quote(work)}\nchmod 700 {quote(work)}\n")
-        copy_to(args.binary, host, f"{work}/tsunami-udp")
+        copy_to(endpoint_binaries[endpoint], host, f"{work}/tsunami-udp")
         copy_to(args.key_file, host, f"{work}/auth.key")
         remote(host, f"chmod 700 {quote(work + '/tsunami-udp')}\nchmod 600 {quote(work + '/auth.key')}\n")
-    return work, hashlib.sha256(args.binary.read_bytes()).hexdigest()
+    hashes = {
+        endpoint: hashlib.sha256(path.read_bytes()).hexdigest()
+        for endpoint, path in endpoint_binaries.items()
+    }
+    return work, hashes
 
 
-def cleanup(host: str, runtime: str, run_id: str, work: str, keep: bool) -> None:
-    script = f"""
+def cleanup(host: str, runtime: str, run_id: str, work: str, keep: bool, containers: bool) -> None:
+    script = ""
+    if containers:
+        script += f"""
 ids=$({quote(runtime)} ps -aq --filter name={quote(run_id)})
 if [[ -n $ids ]]; then
   nice -n 10 ionice -c2 -n7 {quote(runtime)} rm -f $ids >/dev/null 2>&1 || true
@@ -116,7 +142,7 @@ def run_treatment(
     treatment: str,
     source_hash: str,
     host_info: dict[str, dict[str, str]],
-    binary_hash: str,
+    binary_hashes: dict[str, str],
 ) -> dict[str, object]:
     suffix = f"{run_id}-{block_index}-{treatment_index}"
     receiver_name = f"tsu-r-{suffix}"
@@ -127,7 +153,22 @@ def run_treatment(
     receiver_log = f"{work}/receiver-{block_index}-{treatment}.log"
     runtime = quote(args.runtime)
     image = quote(args.image)
-    receiver_script = f"""
+    remote(
+        args.receiver,
+        f"rm -f {quote(output)} {quote(output + '.part')} {quote(output + '.part.map')} {quote(receiver_log)}\n",
+    )
+    receiver_process: subprocess.Popen[str] | None = None
+    if args.receiver_mode == "native":
+        receiver_process = start_remote(
+            args.receiver,
+            f"""
+exec nice -n 10 ionice -c2 -n7 {quote(work + '/tsunami-udp')} receive \
+  --listen 0.0.0.0:{control_port} --udp 0.0.0.0:{udp_port} \
+  --out {quote(output)} --key-file {quote(work + '/auth.key')}
+""",
+        )
+    else:
+        receiver_script = f"""
 rm -f {quote(output)} {quote(output + '.part')} {quote(output + '.part.map')} {quote(receiver_log)}
 nice -n 10 ionice -c2 -n7 {runtime} run -d --name {quote(receiver_name)} \
   -p {control_port}:9000/tcp -p {udp_port}:9001/udp \
@@ -135,7 +176,7 @@ nice -n 10 ionice -c2 -n7 {runtime} run -d --name {quote(receiver_name)} \
   /work/tsunami-udp receive --listen 0.0.0.0:9000 --udp 0.0.0.0:9001 \
   --out /work/{Path(output).name} --key-file /work/auth.key
 """
-    remote(args.receiver, receiver_script)
+        remote(args.receiver, receiver_script)
     ready = remote(
         args.receiver,
         f"""
@@ -143,7 +184,7 @@ for _ in {{1..100}}; do
   if ss -ltn | grep -q ':{control_port} '; then exit 0; fi
   sleep 0.05
 done
-{runtime} logs {quote(receiver_name)} 2>&1 || true
+{f'{runtime} logs {quote(receiver_name)} 2>&1 || true' if args.receiver_mode == 'container' else 'true'}
 exit 1
 """,
         check=False,
@@ -161,27 +202,48 @@ nice -n 10 ionice -c2 -n7 {runtime} run --name {quote(sender_name)} --cap-add NE
 """
     sent = remote(args.sender, sender_script, check=False)
     if sent.returncode != 0:
-        logs = remote(
+        if receiver_process is not None:
+            receiver_process.terminate()
+            try:
+                receiver_stdout, receiver_stderr = receiver_process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                receiver_process.kill()
+                receiver_stdout, receiver_stderr = receiver_process.communicate()
+            logs = receiver_stdout + receiver_stderr
+        else:
+            logs = remote(
+                args.receiver,
+                f"{runtime} logs {quote(receiver_name)} 2>&1 || true\n",
+                check=False,
+            ).stdout
+            remote(
+                args.receiver,
+                f"nice -n 10 ionice -c2 -n7 {runtime} rm -f {quote(receiver_name)} >/dev/null 2>&1 || true\n",
+                check=False,
+            )
+        raise RuntimeError(f"{treatment} sender failed ({sent.returncode}):\n{sent.stderr}\n{logs}")
+    if receiver_process is not None:
+        try:
+            receiver_stdout, receiver_stderr = receiver_process.communicate(timeout=180)
+        except subprocess.TimeoutExpired as error:
+            receiver_process.terminate()
+            raise RuntimeError(f"{treatment} native receiver timed out") from error
+        receiver_returncode = receiver_process.returncode
+        receiver_status = str(receiver_returncode)
+        logs = receiver_stdout + receiver_stderr
+        receiver_failed = receiver_returncode != 0
+    else:
+        receiver_done = remote(
             args.receiver,
-            f"{runtime} logs {quote(receiver_name)} 2>&1 || true\n",
-            check=False,
-        ).stdout
-        remote(
-            args.receiver,
-            f"nice -n 10 ionice -c2 -n7 {runtime} rm -f {quote(receiver_name)} >/dev/null 2>&1 || true\n",
+            f"timeout 180s nice -n 10 ionice -c2 -n7 {runtime} wait {quote(receiver_name)}\n",
             check=False,
         )
-        raise RuntimeError(f"{treatment} sender failed ({sent.returncode}):\n{sent.stderr}\n{logs}")
-    receiver_done = remote(
-        args.receiver,
-        f"timeout 180s nice -n 10 ionice -c2 -n7 {runtime} wait {quote(receiver_name)}\n",
-        check=False,
-    )
-    logs = remote(args.receiver, f"{runtime} logs {quote(receiver_name)} 2>&1 || true\n", check=False).stdout
+        logs = remote(args.receiver, f"{runtime} logs {quote(receiver_name)} 2>&1 || true\n", check=False).stdout
+        receiver_status = receiver_done.stdout.strip()
+        receiver_failed = receiver_done.returncode != 0 or receiver_status != "0"
     Path(args.results).mkdir(parents=True, exist_ok=True)
     (Path(args.results) / f"receiver-{block_index}-{treatment}.log").write_text(logs)
-    receiver_status = receiver_done.stdout.strip()
-    if receiver_done.returncode != 0 or receiver_status != "0":
+    if receiver_failed:
         raise RuntimeError(
             f"{treatment} failed (sender={sent.returncode}, receiver={receiver_status!r}):\n{sent.stderr}\n{logs}"
         )
@@ -190,11 +252,13 @@ nice -n 10 ionice -c2 -n7 {runtime} run --name {quote(sender_name)} --cap-add NE
     if output_hash != source_hash:
         raise RuntimeError(f"hash mismatch for {treatment}: {source_hash} != {output_hash}")
     remote(args.sender, f"nice -n 10 ionice -c2 -n7 {runtime} rm -f {quote(sender_name)} >/dev/null\n", check=False)
-    remote(args.receiver, f"nice -n 10 ionice -c2 -n7 {runtime} rm -f {quote(receiver_name)} >/dev/null\n", check=False)
+    if args.receiver_mode == "container":
+        remote(args.receiver, f"nice -n 10 ionice -c2 -n7 {runtime} rm -f {quote(receiver_name)} >/dev/null\n", check=False)
     sender_json.update(
         {
             "verified": True,
-            "binary_sha256": binary_hash,
+            "binary_sha256": binary_hashes["sender"],
+            "endpoint_binary_sha256": binary_hashes,
             "source_sha256": source_hash,
             "output_sha256": output_hash,
             "scenario": scenario,
@@ -206,7 +270,7 @@ nice -n 10 ionice -c2 -n7 {runtime} run --name {quote(sender_name)} --cap-add NE
                 "expected_treatments": list(TREATMENTS),
             },
             "hosts": host_info,
-            "isolation": "ephemeral sender/receiver containers; netem on sender container eth0 only",
+            "isolation": f"ephemeral sender container with netem on its private interface; {args.receiver_mode} receiver",
         }
     )
     return sender_json
@@ -217,7 +281,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sender", required=True, help="SSH host for the sending Linux machine")
     parser.add_argument("--receiver", required=True, help="SSH host for the receiving Linux machine")
     parser.add_argument("--receiver-address", required=True, help="receiver address reachable from the sender container")
-    parser.add_argument("--binary", required=True, type=Path, help="static Linux release binary")
+    parser.add_argument("--binary", required=True, type=Path, help="static Linux sender release binary")
+    parser.add_argument("--receiver-binary", type=Path, help="receiver-architecture release binary; defaults to --binary")
     parser.add_argument("--key-file", required=True, type=Path, help="32-byte v0.1 PSK")
     parser.add_argument("--results", type=Path, default=Path("two-host-results"))
     parser.add_argument("--blocks", type=int, default=12)
@@ -227,6 +292,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--idle-timeout", type=float, default=300.0)
     parser.add_argument("--runtime", default="podman")
     parser.add_argument("--image", default="docker.io/library/archlinux:base-devel")
+    parser.add_argument("--receiver-mode", choices=("native", "container"), default="native")
     parser.add_argument("--keep-remote", action="store_true")
     parser.add_argument("--allow-same-host-smoke", action="store_true")
     parser.add_argument("--smoke", action="store_true", help="run one 1 MiB block per scenario")
@@ -251,6 +317,8 @@ def main() -> None:
         return
     if not args.binary.is_file() or not args.key_file.is_file():
         raise SystemExit("--binary and --key-file must be files")
+    if args.receiver_binary is not None and not args.receiver_binary.is_file():
+        raise SystemExit("--receiver-binary must be a file")
     if len(args.key_file.read_bytes()) != 32:
         raise SystemExit("--key-file must contain exactly 32 bytes")
     args.results.mkdir(parents=True, exist_ok=True)
@@ -263,7 +331,7 @@ def main() -> None:
     ):
         raise SystemExit("sender and receiver are the same Linux machine; use two independent hosts")
     run_id = uuid.uuid4().hex[:10]
-    work, binary_hash = stage(args, run_id)
+    work, binary_hashes = stage(args, run_id)
     rng = random.Random(args.seed)
     plan = []
     block_index = 0
@@ -281,7 +349,7 @@ def main() -> None:
     preregistration = {
         "schema": 1,
         "run_id": run_id,
-        "binary_sha256": binary_hash,
+        "endpoint_binary_sha256": binary_hashes,
         "hosts": host_info,
         "scenarios": scenarios,
         "blocks_per_scenario": args.blocks,
@@ -307,7 +375,7 @@ def main() -> None:
                 for treatment_index, treatment in enumerate(order):
                     result = run_treatment(
                         args, work, run_id, block_index, treatment_index, scenario,
-                        treatment, source_hash, host_info, binary_hash,
+                        treatment, source_hash, host_info, binary_hashes,
                     )
                     result["design"]["scenario_block"] = scenario_block
                     result["host_load_before_block"] = loads
@@ -316,8 +384,15 @@ def main() -> None:
                     print(path, flush=True)
                 block_index += 1
     finally:
-        cleanup(args.sender, args.runtime, run_id, work, args.keep_remote)
-        cleanup(args.receiver, args.runtime, run_id, work, args.keep_remote)
+        cleanup(args.sender, args.runtime, run_id, work, args.keep_remote, True)
+        cleanup(
+            args.receiver,
+            args.runtime,
+            run_id,
+            work,
+            args.keep_remote,
+            args.receiver_mode == "container",
+        )
 
 
 if __name__ == "__main__":
