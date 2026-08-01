@@ -112,7 +112,10 @@ destination. Repeating the same command resumes when size and hash match; a
 different object safely starts over. Resume maps are protocol-versioned and are
 never shared across TSU1 and TSU2.
 
-The receiver syncs data before atomically publishing each receipt checkpoint.
+The receiver checkpoints at most every five seconds and syncs data before
+atomically publishing each receipt checkpoint. A crash can therefore require
+retransmitting up to roughly five seconds of recently received chunks, but never
+causes an unwritten chunk to be trusted as durable.
 Consequently, a crash can cause a few chunks to be retransmitted but cannot make a
 restart trust data that was not durable. Receipt bitmaps are capped at 64 MiB per
 endpoint (about a 586 GiB file with the current payload), and sender repair queues
