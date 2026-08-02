@@ -93,18 +93,23 @@ The sender proposes:
 - file size;
 - whole-file cryptographic hash;
 - UDP payload size;
+- receiver feedback interval;
 - total chunk count;
 - initial pacing rate.
 - a missing-hole grace interval derived from the expected feedback round trip.
 
-TSU3 adds authenticated `PING`/`PONG`, `CANCEL`, and `COMPLETE_ACK` control
-messages. Both endpoints impose a configurable control-idle deadline (30 seconds
+TSU4 adds exact authenticated payload/cadence negotiation to TSU3's
+`PING`/`PONG`, `CANCEL`, and `COMPLETE_ACK` control messages. Both endpoints impose a configurable control-idle deadline (30 seconds
 by default), so a peer that remains connected but silent cannot retain transfer
 state indefinitely. The sender checks feedback failure throughout the initial
 UDP pass as well as during repair-only operation.
 
-The receiver accepts the session, creates a temporary output file, allocates a
-chunk-receipt bitmap, and tells the sender which UDP address and port to use.
+The receiver validates the offered payload (256–1,424 bytes) and feedback cadence
+(10–10,000 ms), then echoes the exact values in its authenticated `READY`. It
+never silently clamps an experiment parameter. The receiver then creates a
+temporary output file and allocates a chunk-receipt bitmap. If the destination is
+already complete, its authenticated telemetry plus `COMPLETE` is the acceptance;
+there is no redundant `READY` exchange.
 
 For UDP resume, immutable size, SHA-256, payload size, and chunk count identify the
 object while every connection gets a fresh random session ID and derived packet
@@ -132,9 +137,10 @@ message are also authenticated; control messages carry direction-local sequence
 numbers so replay and reordering fail closed.
 
 The byte offset is derived from `chunk_number * negotiated_payload_size`. The
-final chunk may be shorter. A default datagram size near 1,200 bytes avoids IP
-fragmentation across typical paths; "big" should mean close to the safe path MTU,
-not a maximum-size 65,507-byte UDP payload.
+final chunk may be shorter. The 1,172-byte default produces a 1,200-byte UDP
+payload including Packet Tide's 28-byte header, or a 1,228-byte IPv4 packet. The
+1,424-byte conservative maximum fits IPv6 within a 1,500-byte path MTU; paths with
+smaller MTUs require a smaller configured payload.
 
 The UDP checksum remains useful for accidental corruption, while the packet MAC
 provides active-attack integrity. The final whole-file hash is authenticated as
@@ -170,7 +176,7 @@ report over the control connection. A report contains:
 - the Linux UDP socket-drop counter when `/proc` exposes it, otherwise an explicit
   unsupported marker.
 
-TSU3 encodes these as canonical unsigned decimal fields in every authenticated
+TSU4 encodes these as canonical unsigned decimal fields in every authenticated
 `M` report. The final exact snapshot is sent immediately before `COMPLETE` and is
 therefore covered by the same ordered, direction-specific control authentication.
 Invalid or unauthenticated UDP datagrams may increment only the diagnostic invalid
@@ -182,7 +188,7 @@ that losing or superseding one never makes correctness depend on it.
 
 The newest observed sequence is not immediately eligible for a missing report.
 The receiver retains a small time history of the frontier. Reports initially use
-the newest frontier at the normal 50 ms reporting cadence. If a new unique original
+the newest frontier at the negotiated reporting cadence. If a new unique original
 packet arrives below the frontier, the receiver has observed path reordering and
 activates the longer negotiated grace. An explicit packet-kind field ensures late
 repair packets are not misclassified as path reordering. After the sender's `END`, the receiver

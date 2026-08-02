@@ -17,6 +17,8 @@ SEND_RATE_MBIT=${TSU_SEND_RATE_MBIT:-$RATE_MBIT}
 FORWARD_JITTER_MS=${TSU_FORWARD_JITTER_MS:-0}
 FORWARD_DUPLICATE_PERCENT=${TSU_FORWARD_DUPLICATE_PERCENT:-0}
 FORWARD_REORDER_PERCENT=${TSU_FORWARD_REORDER_PERCENT:-0}
+UDP_PAYLOAD_BYTES=${TSU_UDP_PAYLOAD_BYTES:-1172}
+FEEDBACK_INTERVAL_MS=${TSU_FEEDBACK_INTERVAL_MS:-50}
 
 PROGRAM_TRANSPORT=$TRANSPORT
 TCP_CC=''
@@ -154,6 +156,8 @@ else
     --transport "$PROGRAM_TRANSPORT" \
     --rate-mbps "$SEND_RATE_MBIT" \
     --repair-cooldown-ms "$REPAIR_COOLDOWN_MS" \
+    --udp-payload-bytes "$UDP_PAYLOAD_BYTES" \
+    --feedback-interval-ms "$FEEDBACK_INTERVAL_MS" \
     --key-file "$AUTH_KEY" >"$SENDER_JSON"
 
   wait "$receiver_pid"
@@ -165,6 +169,8 @@ else
     ($receiver[0]) as $r |
     .schema_version == 1 and
     .role == "sender" and
+    .udp_payload_bytes == $r.udp_payload_bytes and
+    .feedback_interval_ms == $r.feedback_interval_ms and
     .receiver_received_chunks == $r.received_chunks and
     .receiver_frontier_chunks == $r.frontier_chunks and
     .receiver_accepted_datagrams == $r.accepted_datagrams and
@@ -176,13 +182,17 @@ else
     .receiver_reports == $r.reports
   ' "$SENDER_JSON" >/dev/null
   if [[ $PROGRAM_TRANSPORT == udp ]]; then
-    expected_chunks=$(((FILE_BYTES + 1171) / 1172))
-    jq -e --argjson expected_chunks "$expected_chunks" '
+    expected_chunks=$(((FILE_BYTES + UDP_PAYLOAD_BYTES - 1) / UDP_PAYLOAD_BYTES))
+    jq -e --argjson expected_chunks "$expected_chunks" \
+      --argjson payload_bytes "$UDP_PAYLOAD_BYTES" \
+      --argjson feedback_interval_ms "$FEEDBACK_INTERVAL_MS" '
       .schema_version == 1 and
       .role == "sender" and
       .receiver_received_chunks == $expected_chunks and
       .receiver_frontier_chunks == $expected_chunks and
       .receiver_accepted_datagrams == $expected_chunks and
+      .udp_payload_bytes == $payload_bytes and
+      .feedback_interval_ms == $feedback_interval_ms and
       .receiver_valid_datagrams == (.receiver_accepted_datagrams + .receiver_duplicate_datagrams) and
       .datagrams >= .receiver_valid_datagrams and
       .repairs >= .receiver_repair_datagrams and
@@ -205,6 +215,8 @@ jq -c \
   --argjson forward_jitter_ms "$FORWARD_JITTER_MS" \
   --argjson forward_duplicate_percent "$FORWARD_DUPLICATE_PERCENT" \
   --argjson forward_reorder_percent "$FORWARD_REORDER_PERCENT" \
+  --argjson udp_payload_bytes "$UDP_PAYLOAD_BYTES" \
+  --argjson feedback_interval_ms "$FEEDBACK_INTERVAL_MS" \
   --arg transport "$TRANSPORT" \
   --arg tcp_cc "$ACTUAL_TCP_CC" \
   --arg expected_treatments "$EXPECTED_TREATMENTS" \
@@ -232,6 +244,8 @@ jq -c \
       forward_jitter_ms: $forward_jitter_ms,
       forward_duplicate_percent: $forward_duplicate_percent,
       forward_reorder_percent: $forward_reorder_percent,
+      udp_payload_bytes: $udp_payload_bytes,
+      feedback_interval_ms: $feedback_interval_ms,
       seed: $seed
     },
     network: {

@@ -260,7 +260,7 @@ exit 1
     sender_script = f"""
 nice -n 10 ionice -c2 -n7 {runtime} run --name {quote(sender_name)} --cap-add NET_ADMIN \
   -v {quote(work)}:/work:z {image} sh -lc \
-  {quote(f'iface=$(ip route show default | head -n1 | cut -d " " -f5); test -n "$iface"; ip link set dev "$iface" gso_max_size 1500 gso_ipv4_max_size 1500 gro_max_size 1500 gro_ipv4_max_size 1500; tc qdisc replace dev "$iface" root netem limit 10000 delay {scenario["rtt_ms"]}ms{netem_loss} rate {scenario["rate_mbit"]}mbit seed {seed} && exec /work/packet-tide send --connect {args.receiver_address}:{control_port} --udp-target {args.receiver_address}:{udp_port} --file /work/source-{scenario["file_bytes"]}.bin --transport {treatment} --rate-mbps {sender_rate_mbit} --repair-cooldown-ms {2 * float(scenario["rtt_ms"]) + 50:.0f} --key-file /work/auth.key')}
+  {quote(f'iface=$(ip route show default | head -n1 | cut -d " " -f5); test -n "$iface"; ip link set dev "$iface" gso_max_size 1500 gso_ipv4_max_size 1500 gro_max_size 1500 gro_ipv4_max_size 1500; tc qdisc replace dev "$iface" root netem limit 10000 delay {scenario["rtt_ms"]}ms{netem_loss} rate {scenario["rate_mbit"]}mbit seed {seed} && exec /work/packet-tide send --connect {args.receiver_address}:{control_port} --udp-target {args.receiver_address}:{udp_port} --file /work/source-{scenario["file_bytes"]}.bin --transport {treatment} --rate-mbps {sender_rate_mbit} --repair-cooldown-ms {2 * float(scenario["rtt_ms"]) + 50:.0f} --udp-payload-bytes {args.udp_payload_bytes} --feedback-interval-ms {args.feedback_interval_ms} --key-file /work/auth.key')}
 """
     sent = remote(
         args.sender,
@@ -339,7 +339,9 @@ nice -n 10 ionice -c2 -n7 {runtime} run --name {quote(sender_name)} --cap-add NE
     if sender_json.get("schema_version") == 1 and receiver_summary is None:
         raise RuntimeError(f"{treatment} receiver did not emit a schema-versioned summary:\n{logs}")
     if treatment == "udp" and sender_json.get("schema_version") == 1:
-        expected_chunks = (scenario["file_bytes"] + 1171) // 1172
+        expected_chunks = (
+            scenario["file_bytes"] + args.udp_payload_bytes - 1
+        ) // args.udp_payload_bytes
         expected = {
             "received_chunks": sender_json.get("receiver_received_chunks"),
             "frontier_chunks": sender_json.get("receiver_frontier_chunks"),
@@ -356,7 +358,11 @@ nice -n 10 ionice -c2 -n7 {runtime} run --name {quote(sender_name)} --cap-add NE
                 f"{treatment} sender and receiver telemetry disagree: {expected} != {receiver_summary}"
             )
         if (
-            expected["received_chunks"] != expected_chunks
+            sender_json.get("udp_payload_bytes") != args.udp_payload_bytes
+            or sender_json.get("feedback_interval_ms") != args.feedback_interval_ms
+            or receiver_summary.get("udp_payload_bytes") != args.udp_payload_bytes
+            or receiver_summary.get("feedback_interval_ms") != args.feedback_interval_ms
+            or expected["received_chunks"] != expected_chunks
             or expected["frontier_chunks"] != expected_chunks
             or expected["accepted_datagrams"] != expected_chunks
             or expected["valid_datagrams"]
@@ -430,6 +436,8 @@ def parse_args() -> argparse.Namespace:
         type=float,
         help="optional UDP offered rate, independent of the emulated bottleneck rate",
     )
+    parser.add_argument("--udp-payload-bytes", type=int, default=1172)
+    parser.add_argument("--feedback-interval-ms", type=int, default=50)
     parser.add_argument("--idle-timeout", type=float, default=300.0)
     parser.add_argument("--runtime", default="podman")
     parser.add_argument("--image", default="docker.io/library/archlinux:base-devel")
@@ -452,6 +460,10 @@ def main() -> None:
         raise SystemExit("--blocks must be at least 2")
     if args.udp_rate_mbit is not None and args.udp_rate_mbit <= 0:
         raise SystemExit("--udp-rate-mbit must be positive")
+    if not 256 <= args.udp_payload_bytes <= 1424:
+        raise SystemExit("--udp-payload-bytes must be between 256 and 1424")
+    if not 10 <= args.feedback_interval_ms <= 10_000:
+        raise SystemExit("--feedback-interval-ms must be between 10 and 10000")
     if args.dry_run:
         rng = random.Random(args.seed)
         print(json.dumps([
@@ -513,6 +525,8 @@ def main() -> None:
         "treatments": list(TREATMENTS),
         "randomization_seed": args.seed,
         "udp_sender_rate_mbit": args.udp_rate_mbit,
+        "udp_payload_bytes": args.udp_payload_bytes,
+        "feedback_interval_ms": args.feedback_interval_ms,
         "sender_private_interface_offload_cap_bytes": 1500,
         "plan": plan,
         "release_gates": {
@@ -531,6 +545,8 @@ def main() -> None:
             "treatments",
             "randomization_seed",
             "udp_sender_rate_mbit",
+            "udp_payload_bytes",
+            "feedback_interval_ms",
             "sender_private_interface_offload_cap_bytes",
             "plan",
             "release_gates",

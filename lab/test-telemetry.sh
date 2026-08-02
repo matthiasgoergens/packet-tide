@@ -15,7 +15,8 @@ cleanup() {
     fi
   done
   if (( status != 0 )); then
-    for log in "$work"/*; do
+    shopt -s nullglob
+    for log in "$work"/*.json "$work"/*.err; do
       if [[ -f $log ]]; then
         printf '==> %s <==\n' "$log" >&2
         sed -n '1,160p' "$log" >&2
@@ -48,7 +49,9 @@ sleep 0.2
   --udp-target "127.0.0.1:$((base_port + 2))" \
   --file "$work/source" \
   --transport udp \
-  --rate-mbps 50 \
+  --rate-mbps 10 \
+  --udp-payload-bytes 512 \
+  --feedback-interval-ms 200 \
   --key-file "$work/key" >"$work/sender.json"
 wait "$receiver"
 receiver=
@@ -70,6 +73,8 @@ sleep 0.2
   --file "$work/source" \
   --transport udp \
   --rate-mbps 50 \
+  --udp-payload-bytes 512 \
+  --feedback-interval-ms 200 \
   --key-file "$work/key" >"$work/retry-sender.json"
 wait "$receiver"
 receiver=
@@ -82,7 +87,7 @@ import sys
 sender, receiver, proxy, retry_sender, retry_receiver = [
     json.load(open(path, encoding="utf-8")) for path in sys.argv[1:]
 ]
-expected_chunks = (sender["bytes"] + 1171) // 1172
+expected_chunks = (sender["bytes"] + sender["udp_payload_bytes"] - 1) // sender["udp_payload_bytes"]
 fields = (
     "received_chunks",
     "frontier_chunks",
@@ -97,17 +102,24 @@ fields = (
 for field in fields:
     assert sender[f"receiver_{field}"] == receiver[field], field
 assert sender["schema_version"] == receiver["schema_version"] == 1
+assert sender["udp_payload_bytes"] == receiver["udp_payload_bytes"] == 512
+assert sender["feedback_interval_ms"] == receiver["feedback_interval_ms"] == 200
+expected_periodic_reports = sender["elapsed_ms"] / sender["feedback_interval_ms"]
+assert receiver["reports"] >= max(2, expected_periodic_reports * 0.5)
+assert receiver["reports"] <= expected_periodic_reports * 2 + 3
 assert sender["receiver_received_chunks"] == expected_chunks
 assert sender["receiver_accepted_datagrams"] == expected_chunks
 assert sender["datagrams"] == proxy["received"]
-assert sender["receiver_valid_datagrams"] == proxy["forwarded"]
+assert sender["receiver_valid_datagrams"] == proxy["forwarded"] - proxy["oversized"]
 assert sender["receiver_duplicate_datagrams"] == proxy["duplicated"]
-assert sender["receiver_invalid_datagrams"] == 0
+assert sender["receiver_invalid_datagrams"] == proxy["oversized"] == 1
 assert sender["repairs"] > 0
 assert sender["receiver_repair_datagrams"] > 0
 assert proxy["dropped"] > 0
 assert proxy["duplicated"] > 0
 assert retry_sender["datagrams"] == 0
+assert retry_sender["udp_payload_bytes"] == retry_receiver["udp_payload_bytes"] == 512
+assert retry_sender["feedback_interval_ms"] == retry_receiver["feedback_interval_ms"] == 200
 assert retry_sender["resumed_chunks"] == expected_chunks
 for field in fields:
     assert retry_sender[f"receiver_{field}"] == retry_receiver[field], f"retry {field}"

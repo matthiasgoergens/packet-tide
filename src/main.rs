@@ -19,10 +19,13 @@ mod resume;
 use auth::{ControlReader, ControlWriter, Direction, SecretKey, SessionAuth};
 use resume::ResumeState;
 
-const DATAGRAM_SIZE: usize = 1200;
 const HEADER_SIZE: usize = 28;
-const PAYLOAD_SIZE: usize = DATAGRAM_SIZE - HEADER_SIZE;
-const REPORT_INTERVAL: Duration = Duration::from_millis(50);
+const DEFAULT_UDP_PAYLOAD_BYTES: usize = 1172;
+const MIN_UDP_PAYLOAD_BYTES: usize = 256;
+const MAX_UDP_PAYLOAD_BYTES: usize = 1424;
+const DEFAULT_REPORT_INTERVAL: Duration = Duration::from_millis(50);
+const MIN_REPORT_INTERVAL: Duration = Duration::from_millis(10);
+const MAX_REPORT_INTERVAL: Duration = Duration::from_secs(10);
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const MIN_IDLE_TIMEOUT: Duration = Duration::from_millis(500);
 const MAX_IDLE_TIMEOUT: Duration = Duration::from_secs(60 * 60);
@@ -91,6 +94,8 @@ struct SendArgs {
     transport: Transport,
     rate_mbps: f64,
     repair_cooldown: Duration,
+    udp_payload_bytes: usize,
+    report_interval: Duration,
     idle_timeout: Duration,
     key_file: PathBuf,
 }
@@ -143,7 +148,8 @@ fn usage() {
          [--idle-timeout-ms N]\n  \
          packet-tide send --connect ADDR --udp-target ADDR --file PATH \
          --transport tcp|tcp4|udp --key-file PATH [--rate-mbps N] \
-         [--repair-cooldown-ms N] [--idle-timeout-ms N]\n  \
+         [--repair-cooldown-ms N] [--udp-payload-bytes N] \
+         [--feedback-interval-ms N] [--idle-timeout-ms N]\n  \
          packet-tide keygen --out PATH"
     );
 }
@@ -198,11 +204,13 @@ fn parse_send(args: Vec<String>) -> AnyResult<SendArgs> {
             "--transport",
             "--rate-mbps",
             "--repair-cooldown-ms",
+            "--udp-payload-bytes",
+            "--feedback-interval-ms",
             "--idle-timeout-ms",
             "--key-file",
         ],
     )?;
-    Ok(SendArgs {
+    let parsed = SendArgs {
         connect: resolve_socket(&option(&args, "--connect")?)?,
         udp_target: resolve_socket(&option(&args, "--udp-target")?)?,
         file: option(&args, "--file")?.into(),
@@ -215,9 +223,45 @@ fn parse_send(args: Vec<String>) -> AnyResult<SendArgs> {
                 .unwrap_or_else(|| "250".to_owned())
                 .parse()?,
         ),
+        udp_payload_bytes: parse_udp_payload_bytes(&args)?,
+        report_interval: parse_report_interval(&args)?,
         idle_timeout: parse_idle_timeout(&args)?,
         key_file: option(&args, "--key-file")?.into(),
-    })
+    };
+    if parsed.report_interval >= parsed.idle_timeout {
+        return Err("--feedback-interval-ms must be shorter than --idle-timeout-ms".into());
+    }
+    Ok(parsed)
+}
+
+fn parse_udp_payload_bytes(args: &[String]) -> AnyResult<usize> {
+    let value = optional_option(args, "--udp-payload-bytes")
+        .unwrap_or_else(|| DEFAULT_UDP_PAYLOAD_BYTES.to_string())
+        .parse()?;
+    if !(MIN_UDP_PAYLOAD_BYTES..=MAX_UDP_PAYLOAD_BYTES).contains(&value) {
+        return Err(format!(
+            "--udp-payload-bytes must be between {MIN_UDP_PAYLOAD_BYTES} and {MAX_UDP_PAYLOAD_BYTES}"
+        )
+        .into());
+    }
+    Ok(value)
+}
+
+fn parse_report_interval(args: &[String]) -> AnyResult<Duration> {
+    let value = Duration::from_millis(
+        optional_option(args, "--feedback-interval-ms")
+            .unwrap_or_else(|| DEFAULT_REPORT_INTERVAL.as_millis().to_string())
+            .parse()?,
+    );
+    if !(MIN_REPORT_INTERVAL..=MAX_REPORT_INTERVAL).contains(&value) {
+        return Err(format!(
+            "--feedback-interval-ms must be between {} and {}",
+            MIN_REPORT_INTERVAL.as_millis(),
+            MAX_REPORT_INTERVAL.as_millis()
+        )
+        .into());
+    }
+    Ok(value)
 }
 
 fn parse_receive(args: Vec<String>) -> AnyResult<ReceiveArgs> {
@@ -262,7 +306,7 @@ fn send(args: SendArgs) -> AnyResult<()> {
     let size = fs::metadata(&args.file)?.len();
     let expected_hash = hash_file(&args.file)?;
     let offered_session = auth::random_session()?;
-    let chunks = size.div_ceil(PAYLOAD_SIZE as u64);
+    let chunks = size.div_ceil(args.udp_payload_bytes as u64);
     if chunks > MAX_CHUNKS {
         return Err(format!(
             "file requires {chunks} chunks; maximum is {MAX_CHUNKS} to keep receipt memory bounded"
@@ -275,13 +319,17 @@ fn send(args: SendArgs) -> AnyResult<()> {
     control.set_read_timeout(Some(args.idle_timeout))?;
     control.set_write_timeout(Some(args.idle_timeout))?;
     let hello = format!(
-        "{} {} {} {} {} {}",
+        "{} {} {} {} {} {} {} {}",
         args.transport.wire_name(),
         size,
         expected_hash,
         auth::hex(&offered_session),
         chunks,
-        (args.repair_cooldown / 2).max(REPORT_INTERVAL).as_millis()
+        args.udp_payload_bytes,
+        args.report_interval.as_millis(),
+        (args.repair_cooldown / 2)
+            .max(args.report_interval)
+            .as_millis()
     );
     let session_auth = auth::client_handshake(&mut control, &key, &hello)?;
     let mut control_reader = ControlReader::new(
@@ -295,8 +343,13 @@ fn send(args: SendArgs) -> AnyResult<()> {
         Direction::ClientToServer,
     );
 
-    let (durable_chunks, already_complete, acceptance_telemetry) =
-        read_acceptance(&mut control_reader, args.transport, chunks)?;
+    let (durable_chunks, already_complete, acceptance_telemetry) = read_acceptance(
+        &mut control_reader,
+        args.transport,
+        chunks,
+        args.udp_payload_bytes,
+        args.report_interval,
+    )?;
     let resumed_chunks = durable_chunks
         .iter()
         .map(|word| word.count_ones() as u64)
@@ -307,7 +360,8 @@ fn send(args: SendArgs) -> AnyResult<()> {
             .socket_drops
             .map_or_else(|| "null".to_owned(), |drops| drops.to_string());
         println!(
-            "{{\"schema_version\":1,\"role\":\"sender\",\"transport\":\"{}\",\"bytes\":{},\"elapsed_ms\":0.0,\
+            "{{\"schema_version\":1,\"role\":\"sender\",\"transport\":\"{}\",\"bytes\":{},\
+             \"udp_payload_bytes\":{},\"feedback_interval_ms\":{},\"elapsed_ms\":0.0,\
              \"goodput_mbps\":0.0,\"datagrams\":0,\"repairs\":0,\
              \"udp_ip_bytes_offered\":0,\"resumed_chunks\":{},\
              \"receiver_received_chunks\":{},\"receiver_frontier_chunks\":{},\
@@ -317,6 +371,8 @@ fn send(args: SendArgs) -> AnyResult<()> {
              \"receiver_reports\":{}}}",
             args.transport.display_name(),
             size,
+            args.udp_payload_bytes,
+            args.report_interval.as_millis(),
             chunks,
             acceptance_telemetry.received_chunks,
             acceptance_telemetry.frontier_chunks,
@@ -351,6 +407,7 @@ fn send(args: SendArgs) -> AnyResult<()> {
                 target: args.udp_target,
                 rate_mbps: args.rate_mbps,
                 repair_cooldown: args.repair_cooldown,
+                payload_bytes: args.udp_payload_bytes,
                 idle_timeout: args.idle_timeout,
                 durable_chunks,
             };
@@ -368,7 +425,8 @@ fn send(args: SendArgs) -> AnyResult<()> {
         .socket_drops
         .map_or_else(|| "null".to_owned(), |drops| drops.to_string());
     println!(
-        "{{\"schema_version\":1,\"role\":\"sender\",\"transport\":\"{}\",\"bytes\":{},\"elapsed_ms\":{:.3},\
+        "{{\"schema_version\":1,\"role\":\"sender\",\"transport\":\"{}\",\"bytes\":{},\
+         \"udp_payload_bytes\":{},\"feedback_interval_ms\":{},\"elapsed_ms\":{:.3},\
          \"goodput_mbps\":{:.3},\"datagrams\":{},\"repairs\":{},\
          \"udp_ip_bytes_offered\":{},\"resumed_chunks\":{},\
          \"receiver_received_chunks\":{},\"receiver_frontier_chunks\":{},\
@@ -378,6 +436,8 @@ fn send(args: SendArgs) -> AnyResult<()> {
          \"receiver_reports\":{}}}",
         args.transport.display_name(),
         size,
+        args.udp_payload_bytes,
+        args.report_interval.as_millis(),
         elapsed.as_secs_f64() * 1000.0,
         goodput_mbps,
         datagrams,
@@ -410,6 +470,8 @@ fn read_acceptance(
     control: &mut ControlReader,
     transport: Transport,
     chunks: u64,
+    payload_bytes: usize,
+    report_interval: Duration,
 ) -> AnyResult<(Vec<u64>, bool, ReceiverTelemetry)> {
     let mut line = control.recv()?;
     let mut telemetry = ReceiverTelemetry::default();
@@ -428,7 +490,8 @@ fn read_acceptance(
     if line == "COMPLETE" {
         return Ok((Vec::new(), true, telemetry));
     }
-    if line != "READY" {
+    let expected_ready = format!("READY {payload_bytes} {}", report_interval.as_millis());
+    if line != expected_ready {
         return Err(format!("receiver rejected transfer: {line}").into());
     }
     if transport != Transport::Udp {
@@ -494,7 +557,7 @@ fn send_tcp4(
         let mac = auth::lane_mac(&auth.lane, &auth.session, lane);
         writeln!(
             stream,
-            "TSU3D {} {lane} {}",
+            "TSU4D {} {lane} {}",
             auth::hex(&auth.session),
             auth::hex(&mac)
         )?;
@@ -550,6 +613,7 @@ struct UdpSendConfig {
     target: SocketAddr,
     rate_mbps: f64,
     repair_cooldown: Duration,
+    payload_bytes: usize,
     idle_timeout: Duration,
     durable_chunks: Vec<u64>,
 }
@@ -609,7 +673,7 @@ fn send_udp_inner(
     });
 
     let mut pacer = Pacer::new(config.rate_mbps * 1_000_000.0 / 8.0);
-    let mut packet = vec![0_u8; DATAGRAM_SIZE];
+    let mut packet = vec![0_u8; HEADER_SIZE + config.payload_bytes];
     let mut datagrams = 0_u64;
     let mut repairs = 0_u64;
     let mut udp_ip_bytes_offered = 0_u64;
@@ -628,6 +692,7 @@ fn send_udp_inner(
             &config.auth,
             sequence,
             false,
+            config.payload_bytes,
             &mut packet,
         )?;
         socket.send(&packet[..packet_len])?;
@@ -637,8 +702,15 @@ fn send_udp_inner(
 
         if sequence % 16 == 15 {
             for repair in take_repairs(&pending, 4) {
-                let packet_len =
-                    build_packet(&file, config.size, &config.auth, repair, true, &mut packet)?;
+                let packet_len = build_packet(
+                    &file,
+                    config.size,
+                    &config.auth,
+                    repair,
+                    true,
+                    config.payload_bytes,
+                    &mut packet,
+                )?;
                 socket.send(&packet[..packet_len])?;
                 datagrams += 1;
                 repairs += 1;
@@ -660,8 +732,15 @@ fn send_udp_inner(
             continue;
         }
         for repair in repairs_now {
-            let packet_len =
-                build_packet(&file, config.size, &config.auth, repair, true, &mut packet)?;
+            let packet_len = build_packet(
+                &file,
+                config.size,
+                &config.auth,
+                repair,
+                true,
+                config.payload_bytes,
+                &mut packet,
+            )?;
             socket.send(&packet[..packet_len])?;
             datagrams += 1;
             repairs += 1;
@@ -871,16 +950,17 @@ fn build_packet(
     auth: &SessionAuth,
     sequence: u64,
     repair: bool,
+    payload_bytes: usize,
     packet: &mut [u8],
 ) -> AnyResult<usize> {
     let offset = sequence
-        .checked_mul(PAYLOAD_SIZE as u64)
+        .checked_mul(payload_bytes as u64)
         .ok_or("packet offset overflow")?;
     if offset >= size && size != 0 {
         return Err(format!("sequence {sequence} is outside the file").into());
     }
-    let payload_len = (size.saturating_sub(offset)).min(PAYLOAD_SIZE as u64) as usize;
-    packet[0] = 3;
+    let payload_len = (size.saturating_sub(offset)).min(payload_bytes as u64) as usize;
+    packet[0] = 4;
     packet[1..9].copy_from_slice(&sequence.to_be_bytes());
     packet[9] = u8::from(repair);
     packet[10..12].copy_from_slice(&(payload_len as u16).to_be_bytes());
@@ -973,7 +1053,11 @@ fn receive(args: ReceiveArgs) -> AnyResult<()> {
     let started = Instant::now();
     let result: AnyResult<Option<ReceiverTelemetry>> = match hello.transport {
         Transport::Tcp => {
-            control_writer.send("READY")?;
+            control_writer.send(&format!(
+                "READY {} {}",
+                hello.payload_bytes,
+                hello.report_interval.as_millis()
+            ))?;
             receive_tcp(
                 &mut control,
                 &mut control_writer,
@@ -985,7 +1069,11 @@ fn receive(args: ReceiveArgs) -> AnyResult<()> {
             .map(|()| None)
         }
         Transport::Tcp4 => {
-            control_writer.send("READY")?;
+            control_writer.send(&format!(
+                "READY {} {}",
+                hello.payload_bytes,
+                hello.report_interval.as_millis()
+            ))?;
             receive_tcp4(
                 &listener,
                 &mut control_writer,
@@ -1027,13 +1115,16 @@ fn receive(args: ReceiveArgs) -> AnyResult<()> {
             .map_or_else(|| "null".to_owned(), |drops| drops.to_string());
         println!(
             "{{\"schema_version\":1,\"role\":\"receiver\",\"transport\":\"{}\",\
-             \"bytes\":{},\"elapsed_ms\":{:.3},\"goodput_mbps\":{:.3},\
+             \"bytes\":{},\"udp_payload_bytes\":{},\"feedback_interval_ms\":{},\
+             \"elapsed_ms\":{:.3},\"goodput_mbps\":{:.3},\
              \"received_chunks\":{},\"frontier_chunks\":{},\
              \"accepted_datagrams\":{},\"valid_datagrams\":{},\
              \"duplicate_datagrams\":{},\"invalid_datagrams\":{},\
              \"repair_datagrams\":{},\"socket_drops\":{},\"reports\":{}}}",
             hello.transport.display_name(),
             hello.size,
+            hello.payload_bytes,
+            hello.report_interval.as_millis(),
             elapsed.as_secs_f64() * 1000.0,
             goodput_mbps,
             telemetry.received_chunks,
@@ -1056,13 +1147,32 @@ struct Hello {
     hash: String,
     session: [u8; 16],
     chunks: u64,
+    payload_bytes: usize,
+    report_interval: Duration,
     repair_grace: Duration,
+}
+
+#[derive(Clone, Copy)]
+struct ChunkLayout {
+    size: u64,
+    chunks: u64,
+    payload_bytes: usize,
+}
+
+impl Hello {
+    fn chunk_layout(&self) -> ChunkLayout {
+        ChunkLayout {
+            size: self.size,
+            chunks: self.chunks,
+            payload_bytes: self.payload_bytes,
+        }
+    }
 }
 
 fn parse_hello(line: &str) -> AnyResult<Hello> {
     let parts: Vec<_> = line.split_whitespace().collect();
-    if parts.len() != 6 {
-        return Err("invalid authenticated TSU3 greeting body".into());
+    if parts.len() != 8 {
+        return Err("invalid authenticated TSU4 greeting body".into());
     }
     let transport = match parts[0] {
         "TCP" => Transport::Tcp,
@@ -1072,22 +1182,32 @@ fn parse_hello(line: &str) -> AnyResult<Hello> {
     };
     let hello = Hello {
         transport,
-        size: parts[1].parse()?,
+        size: parse_canonical_u64(parts[1])?,
         hash: parts[2].to_owned(),
         session: auth::decode_array::<16>(parts[3])?,
-        chunks: parts[4].parse()?,
-        repair_grace: Duration::from_millis(parts[5].parse()?),
+        chunks: parse_canonical_u64(parts[4])?,
+        payload_bytes: usize::try_from(parse_canonical_u64(parts[5])?)?,
+        report_interval: Duration::from_millis(parse_canonical_u64(parts[6])?),
+        repair_grace: Duration::from_millis(parse_canonical_u64(parts[7])?),
     };
     auth::decode_array::<32>(&hello.hash)?;
-    let expected_chunks = hello.size.div_ceil(PAYLOAD_SIZE as u64);
+    if !(MIN_UDP_PAYLOAD_BYTES..=MAX_UDP_PAYLOAD_BYTES).contains(&hello.payload_bytes) {
+        return Err("UDP payload size is outside the supported bounds".into());
+    }
+    if !(MIN_REPORT_INTERVAL..=MAX_REPORT_INTERVAL).contains(&hello.report_interval) {
+        return Err("feedback interval is outside the supported bounds".into());
+    }
+    let expected_chunks = hello.size.div_ceil(hello.payload_bytes as u64);
     if hello.chunks != expected_chunks {
         return Err("chunk count does not match file size".into());
     }
     if hello.chunks > MAX_CHUNKS {
         return Err("file exceeds the bounded receipt-map limit".into());
     }
-    if hello.repair_grace > Duration::from_secs(60) {
-        return Err("repair grace exceeds 60 seconds".into());
+    if hello.repair_grace < hello.report_interval || hello.repair_grace > Duration::from_secs(60) {
+        return Err(
+            "repair grace must cover at least one feedback interval and at most 60 seconds".into(),
+        );
     }
     Ok(hello)
 }
@@ -1223,7 +1343,7 @@ fn read_tcp4_hello(stream: &mut TcpStream, session_auth: &SessionAuth) -> AnyRes
     }
     let greeting = std::str::from_utf8(&greeting)?;
     let parts: Vec<_> = greeting.split_whitespace().collect();
-    if parts.len() != 4 || parts[0] != "TSU3D" {
+    if parts.len() != 4 || parts[0] != "TSU4D" {
         return Err("invalid TCP4 data greeting".into());
     }
     let session = auth::decode_array::<16>(parts[1])?;
@@ -1280,7 +1400,13 @@ fn receive_udp(
         return Ok(telemetry);
     }
 
-    let (file, mut state) = ResumeState::open(destination, hello.size, hello.chunks, &hello.hash)?;
+    let (file, mut state) = ResumeState::open(
+        destination,
+        hello.size,
+        hello.chunks,
+        hello.payload_bytes,
+        &hello.hash,
+    )?;
     let mut telemetry = ReceiverTelemetry {
         received_chunks: state.received_count,
         ..ReceiverTelemetry::default()
@@ -1291,13 +1417,16 @@ fn receive_udp(
     advance_hash_frontier(
         &file,
         &state.bitmap,
-        hello.chunks,
-        hello.size,
+        hello.chunk_layout(),
         &mut hash_frontier,
         &mut object_hasher,
         &mut hash_buffer,
     )?;
-    control.send("READY")?;
+    control.send(&format!(
+        "READY {} {}",
+        hello.payload_bytes,
+        hello.report_interval.as_millis()
+    ))?;
     for (index, word) in state.bitmap.iter().copied().enumerate() {
         if word != 0 {
             control.send(&format!("H {index} {word:016x}"))?;
@@ -1349,7 +1478,9 @@ fn receive_udp(
         }
     });
 
-    let mut packet = vec![0_u8; 65_535];
+    // One extra byte makes oversized datagrams observable: recv() otherwise
+    // truncates them to the buffer length without reporting truncation.
+    let mut packet = vec![0_u8; HEADER_SIZE + hello.payload_bytes + 1];
     loop {
         match udp.recv(&mut packet) {
             Ok(count) => 'packet: {
@@ -1357,7 +1488,7 @@ fn receive_udp(
                     telemetry.invalid_datagrams = telemetry.invalid_datagrams.saturating_add(1);
                     break 'packet;
                 }
-                if packet[0] != 3 {
+                if packet[0] != 4 {
                     telemetry.invalid_datagrams = telemetry.invalid_datagrams.saturating_add(1);
                     break 'packet;
                 }
@@ -1372,7 +1503,7 @@ fn receive_udp(
                 };
                 let payload_len = u16::from_be_bytes(packet[10..12].try_into()?) as usize;
                 if sequence >= hello.chunks
-                    || payload_len > PAYLOAD_SIZE
+                    || payload_len > hello.payload_bytes
                     || count != HEADER_SIZE + payload_len
                 {
                     telemetry.invalid_datagrams = telemetry.invalid_datagrams.saturating_add(1);
@@ -1387,9 +1518,9 @@ fn receive_udp(
                     telemetry.invalid_datagrams = telemetry.invalid_datagrams.saturating_add(1);
                     break 'packet;
                 }
-                let offset = sequence * PAYLOAD_SIZE as u64;
+                let offset = sequence * hello.payload_bytes as u64;
                 let expected_len =
-                    (hello.size.saturating_sub(offset)).min(PAYLOAD_SIZE as u64) as usize;
+                    (hello.size.saturating_sub(offset)).min(hello.payload_bytes as u64) as usize;
                 if payload_len != expected_len {
                     telemetry.invalid_datagrams = telemetry.invalid_datagrams.saturating_add(1);
                     break 'packet;
@@ -1415,8 +1546,7 @@ fn receive_udp(
                         advance_hash_frontier(
                             &file,
                             &state.bitmap,
-                            hello.chunks,
-                            hello.size,
+                            hello.chunk_layout(),
                             &mut hash_frontier,
                             &mut object_hasher,
                             &mut hash_buffer,
@@ -1469,8 +1599,7 @@ fn receive_udp(
             advance_hash_frontier(
                 &file,
                 &state.bitmap,
-                hello.chunks,
-                hello.size,
+                hello.chunk_layout(),
                 &mut hash_frontier,
                 &mut object_hasher,
                 &mut hash_buffer,
@@ -1523,7 +1652,7 @@ fn receive_udp(
             last_checkpoint = Instant::now();
         }
 
-        if last_report.elapsed() >= REPORT_INTERVAL {
+        if last_report.elapsed() >= hello.report_interval {
             let now = Instant::now();
             let active_grace = if reordering_observed {
                 hello.repair_grace
@@ -1570,24 +1699,23 @@ fn highest_received(bitmap: &[u64]) -> Option<u64> {
 fn advance_hash_frontier(
     file: &File,
     bitmap: &[u64],
-    chunks: u64,
-    size: u64,
+    layout: ChunkLayout,
     frontier: &mut u64,
     hasher: &mut Sha256,
     buffer: &mut [u8],
 ) -> AnyResult<()> {
     let start = *frontier;
     let mut end = start;
-    while end < chunks && bitmap_contains(bitmap, end) {
+    while end < layout.chunks && bitmap_contains(bitmap, end) {
         end += 1;
     }
     let mut offset = start
-        .checked_mul(PAYLOAD_SIZE as u64)
+        .checked_mul(layout.payload_bytes as u64)
         .ok_or("hash frontier offset overflow")?;
     let byte_end = end
-        .checked_mul(PAYLOAD_SIZE as u64)
+        .checked_mul(layout.payload_bytes as u64)
         .ok_or("hash frontier offset overflow")?
-        .min(size);
+        .min(layout.size);
     while offset < byte_end {
         let wanted = (byte_end - offset).min(buffer.len() as u64) as usize;
         let count = file.read_at(&mut buffer[..wanted], offset)?;
@@ -1848,13 +1976,14 @@ mod tests {
         fs::write(&path, b"payload").unwrap();
         let file = File::open(&path).unwrap();
         let auth = auth::test_session();
-        let mut packet = vec![0_u8; DATAGRAM_SIZE];
-        let original = build_packet(&file, 7, &auth, 0, false, &mut packet).unwrap();
-        assert_eq!(packet[0], 3);
+        let payload_bytes = DEFAULT_UDP_PAYLOAD_BYTES;
+        let mut packet = vec![0_u8; HEADER_SIZE + payload_bytes];
+        let original = build_packet(&file, 7, &auth, 0, false, payload_bytes, &mut packet).unwrap();
+        assert_eq!(packet[0], 4);
         assert_eq!(packet[9], 0);
         assert_eq!(u16::from_be_bytes(packet[10..12].try_into().unwrap()), 7);
         assert_eq!(original, HEADER_SIZE + 7);
-        let repair = build_packet(&file, 7, &auth, 0, true, &mut packet).unwrap();
+        let repair = build_packet(&file, 7, &auth, 0, true, payload_bytes, &mut packet).unwrap();
         assert_eq!(packet[9], 1);
         assert_eq!(repair, original);
         fs::remove_file(path).unwrap();
@@ -2010,10 +2139,48 @@ mod tests {
     }
 
     #[test]
+    fn negotiated_udp_parameters_are_bounded() {
+        assert_eq!(parse_udp_payload_bytes(&[]).unwrap(), 1172);
+        assert_eq!(
+            parse_report_interval(&[]).unwrap(),
+            Duration::from_millis(50)
+        );
+        assert_eq!(
+            parse_udp_payload_bytes(&["--udp-payload-bytes".into(), "256".into()]).unwrap(),
+            256
+        );
+        assert_eq!(
+            parse_udp_payload_bytes(&["--udp-payload-bytes".into(), "1424".into()]).unwrap(),
+            1424
+        );
+        assert!(parse_udp_payload_bytes(&["--udp-payload-bytes".into(), "255".into()]).is_err());
+        assert!(parse_udp_payload_bytes(&["--udp-payload-bytes".into(), "1425".into()]).is_err());
+        assert!(parse_report_interval(&["--feedback-interval-ms".into(), "9".into()]).is_err());
+        assert!(parse_report_interval(&["--feedback-interval-ms".into(), "10001".into()]).is_err());
+    }
+
+    #[test]
+    fn authenticated_hello_binds_udp_parameters() {
+        let hash = "00".repeat(32);
+        let session = "11".repeat(16);
+        let valid = format!("UDP 2000 {hash} {session} 4 512 20 125");
+        let hello = parse_hello(&valid).unwrap();
+        assert_eq!(hello.chunks, 4);
+        assert_eq!(hello.payload_bytes, 512);
+        assert_eq!(hello.report_interval, Duration::from_millis(20));
+        assert!(parse_hello(&format!("UDP 2000 {hash} {session} 4 0512 20 125")).is_err());
+        assert!(parse_hello(&format!("UDP 2000 {hash} {session} 3 512 20 125")).is_err());
+        assert!(parse_hello(&format!("UDP 2000 {hash} {session} 4 255 20 125")).is_err());
+        assert!(parse_hello(&format!("UDP 2000 {hash} {session} 4 512 9 125")).is_err());
+        assert!(parse_hello(&format!("UDP 2000 {hash} {session} 4 512 20 19")).is_err());
+    }
+
+    #[test]
     fn object_hash_advances_only_over_contiguous_received_chunks() {
         let path =
             std::env::temp_dir().join(format!("packet-tide-hash-frontier-{}", std::process::id()));
-        let bytes = vec![0x5a; PAYLOAD_SIZE * 3];
+        let payload_bytes = 512;
+        let bytes = vec![0x5a; payload_bytes * 3];
         fs::write(&path, &bytes).unwrap();
         let file = File::open(&path).unwrap();
         let mut bitmap = vec![0_u64; 1];
@@ -2025,8 +2192,11 @@ mod tests {
         advance_hash_frontier(
             &file,
             &bitmap,
-            3,
-            bytes.len() as u64,
+            ChunkLayout {
+                size: bytes.len() as u64,
+                chunks: 3,
+                payload_bytes,
+            },
             &mut frontier,
             &mut hasher,
             &mut buffer,
@@ -2035,15 +2205,18 @@ mod tests {
         assert_eq!(frontier, 1);
         assert_eq!(
             hex_digest(hasher.clone().finalize().as_slice()),
-            hex_digest(Sha256::digest(&bytes[..PAYLOAD_SIZE]).as_slice())
+            hex_digest(Sha256::digest(&bytes[..payload_bytes]).as_slice())
         );
 
         bitmap_insert(&mut bitmap, 1);
         advance_hash_frontier(
             &file,
             &bitmap,
-            3,
-            bytes.len() as u64,
+            ChunkLayout {
+                size: bytes.len() as u64,
+                chunks: 3,
+                payload_bytes,
+            },
             &mut frontier,
             &mut hasher,
             &mut buffer,
