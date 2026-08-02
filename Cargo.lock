@@ -67,8 +67,15 @@ name = "packet-tide"
 version = "0.2.0-alpha.1"
 dependencies = [
  "libc",
+ "raptorq",
  "sha2",
 ]
+
+[[package]]
+name = "raptorq"
+version = "1.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7cc8cd0bcb2d520fff368264b5a6295e064c60955349517d09b14473afae4856"
 
 [[package]]
 name = "sha2"
