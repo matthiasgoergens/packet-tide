@@ -115,6 +115,32 @@ struct ReceiveArgs {
     key_file: PathBuf,
 }
 
+#[derive(Debug)]
+struct SendDirArgs {
+    connect: SocketAddr,
+    data_connect: SocketAddr,
+    udp_target: SocketAddr,
+    root: PathBuf,
+    rate_mbps: Option<f64>,
+    min_rate_mbps: f64,
+    max_rate_mbps: f64,
+    repair_cooldown: Duration,
+    udp_payload_bytes: usize,
+    report_interval: Duration,
+    idle_timeout: Duration,
+    key_file: PathBuf,
+}
+
+#[derive(Debug)]
+struct ReceiveDirArgs {
+    listen: SocketAddr,
+    data_listen: SocketAddr,
+    udp: SocketAddr,
+    out: PathBuf,
+    idle_timeout: Duration,
+    key_file: PathBuf,
+}
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("error: {error}");
@@ -127,6 +153,8 @@ fn run() -> AnyResult<()> {
     match args.next().as_deref() {
         Some("send") => send(parse_send(args.collect())?),
         Some("receive") => receive(parse_receive(args.collect())?),
+        Some("send-dir") => send_dir(parse_send_dir(args.collect())?),
+        Some("receive-dir") => receive_dir(parse_receive_dir(args.collect())?),
         Some("keygen") => {
             let args: Vec<_> = args.collect();
             validate_options(&args, &["--out"])?;
@@ -148,7 +176,10 @@ fn run() -> AnyResult<()> {
         }
         _ => {
             usage();
-            Err("expected send, receive, manifest, or keygen subcommand".into())
+            Err(
+                "expected send, receive, send-dir, receive-dir, manifest, or keygen subcommand"
+                    .into(),
+            )
         }
     }
 }
@@ -159,6 +190,13 @@ fn usage() {
          [--idle-timeout-ms N]\n  \
          packet-tide send --connect ADDR --udp-target ADDR --file PATH \
          --transport tcp|tcp4|udp --key-file PATH [--rate-mbps N] \
+         [--min-rate-mbps N] [--max-rate-mbps N] \
+         [--repair-cooldown-ms N] [--udp-payload-bytes N] \
+         [--feedback-interval-ms N] [--idle-timeout-ms N]\n  \
+         packet-tide receive-dir --listen ADDR --data-listen ADDR --udp ADDR \
+         --out PATH --key-file PATH [--idle-timeout-ms N]\n  \
+         packet-tide send-dir --connect ADDR --data-connect ADDR --udp-target ADDR \
+         --root PATH --key-file PATH [--rate-mbps N] \
          [--min-rate-mbps N] [--max-rate-mbps N] \
          [--repair-cooldown-ms N] [--udp-payload-bytes N] \
          [--feedback-interval-ms N] [--idle-timeout-ms N]\n  \
@@ -273,6 +311,79 @@ fn parse_send(args: Vec<String>) -> AnyResult<SendArgs> {
     Ok(parsed)
 }
 
+fn parse_send_dir(args: Vec<String>) -> AnyResult<SendDirArgs> {
+    validate_options(
+        &args,
+        &[
+            "--connect",
+            "--data-connect",
+            "--udp-target",
+            "--root",
+            "--rate-mbps",
+            "--min-rate-mbps",
+            "--max-rate-mbps",
+            "--repair-cooldown-ms",
+            "--udp-payload-bytes",
+            "--feedback-interval-ms",
+            "--idle-timeout-ms",
+            "--key-file",
+        ],
+    )?;
+    let parsed = SendDirArgs {
+        connect: resolve_socket(&option(&args, "--connect")?)?,
+        data_connect: resolve_socket(&option(&args, "--data-connect")?)?,
+        udp_target: resolve_socket(&option(&args, "--udp-target")?)?,
+        root: option(&args, "--root")?.into(),
+        rate_mbps: optional_option(&args, "--rate-mbps")
+            .map(|value| value.parse())
+            .transpose()?,
+        min_rate_mbps: optional_option(&args, "--min-rate-mbps")
+            .unwrap_or_else(|| DEFAULT_AUTO_MIN_RATE_MBPS.to_string())
+            .parse()?,
+        max_rate_mbps: optional_option(&args, "--max-rate-mbps")
+            .unwrap_or_else(|| DEFAULT_AUTO_MAX_RATE_MBPS.to_string())
+            .parse()?,
+        repair_cooldown: Duration::from_millis(
+            optional_option(&args, "--repair-cooldown-ms")
+                .unwrap_or_else(|| "250".to_owned())
+                .parse()?,
+        ),
+        udp_payload_bytes: parse_udp_payload_bytes(&args)?,
+        report_interval: parse_report_interval(&args)?,
+        idle_timeout: parse_idle_timeout(&args)?,
+        key_file: option(&args, "--key-file")?.into(),
+    };
+    validate_rate_configuration(
+        parsed.rate_mbps,
+        parsed.min_rate_mbps,
+        parsed.max_rate_mbps,
+        optional_option(&args, "--min-rate-mbps").is_some()
+            || optional_option(&args, "--max-rate-mbps").is_some(),
+    )?;
+    if parsed.report_interval >= parsed.idle_timeout {
+        return Err("--feedback-interval-ms must be shorter than --idle-timeout-ms".into());
+    }
+    Ok(parsed)
+}
+
+fn validate_rate_configuration(
+    fixed: Option<f64>,
+    minimum: f64,
+    maximum: f64,
+    explicit_bounds: bool,
+) -> AnyResult<()> {
+    if fixed.is_some_and(|rate| !rate.is_finite() || rate <= 0.0) {
+        return Err("--rate-mbps must be positive and finite".into());
+    }
+    if !minimum.is_finite() || !maximum.is_finite() || minimum <= 0.0 || maximum < minimum {
+        return Err("automatic rate bounds must be positive, finite, and ordered".into());
+    }
+    if fixed.is_some() && explicit_bounds {
+        return Err("--rate-mbps is a fixed-rate override and cannot be combined with automatic rate bounds".into());
+    }
+    Ok(())
+}
+
 fn parse_udp_payload_bytes(args: &[String]) -> AnyResult<usize> {
     let value = optional_option(args, "--udp-payload-bytes")
         .unwrap_or_else(|| DEFAULT_UDP_PAYLOAD_BYTES.to_string())
@@ -323,6 +434,28 @@ fn parse_receive(args: Vec<String>) -> AnyResult<ReceiveArgs> {
     })
 }
 
+fn parse_receive_dir(args: Vec<String>) -> AnyResult<ReceiveDirArgs> {
+    validate_options(
+        &args,
+        &[
+            "--listen",
+            "--data-listen",
+            "--udp",
+            "--out",
+            "--key-file",
+            "--idle-timeout-ms",
+        ],
+    )?;
+    Ok(ReceiveDirArgs {
+        listen: resolve_socket(&option(&args, "--listen")?)?,
+        data_listen: resolve_socket(&option(&args, "--data-listen")?)?,
+        udp: resolve_socket(&option(&args, "--udp")?)?,
+        out: option(&args, "--out")?.into(),
+        idle_timeout: parse_idle_timeout(&args)?,
+        key_file: option(&args, "--key-file")?.into(),
+    })
+}
+
 fn parse_idle_timeout(args: &[String]) -> AnyResult<Duration> {
     let timeout = Duration::from_millis(
         optional_option(args, "--idle-timeout-ms")
@@ -338,6 +471,159 @@ fn parse_idle_timeout(args: &[String]) -> AnyResult<Duration> {
         .into());
     }
     Ok(timeout)
+}
+
+fn send_dir(args: SendDirArgs) -> AnyResult<()> {
+    let manifest = directory::build(&args.root)?;
+    let encoded = directory::encode(&manifest);
+    let key = SecretKey::load(&args.key_file)?;
+    let mut control = TcpStream::connect(args.connect)?;
+    control.set_nodelay(true)?;
+    control.set_read_timeout(Some(args.idle_timeout))?;
+    control.set_write_timeout(Some(args.idle_timeout))?;
+    let hello = format!(
+        "DIR {} {}",
+        auth::hex(&manifest.hash),
+        manifest.entries.len()
+    );
+    let session = auth::client_handshake(&mut control, &key, &hello)?;
+    let mut writer = ControlWriter::new(
+        control.try_clone()?,
+        session.clone(),
+        Direction::ClientToServer,
+    );
+    let mut reader = ControlReader::new(control.try_clone()?, session, Direction::ServerToClient);
+    for line in encoded.lines() {
+        writer.send(line)?;
+    }
+    writer.send("MANIFEST_END")?;
+    let expected = format!("MANIFEST_OK {}", auth::hex(&manifest.hash));
+    let response = reader.recv()?;
+    if response != expected {
+        return Err(format!("receiver rejected directory manifest: {response}").into());
+    }
+    drop(reader);
+    drop(writer);
+    drop(control);
+
+    let mut files = 0_u64;
+    let mut bytes = 0_u64;
+    for (index, entry) in manifest.entries.iter().enumerate() {
+        if entry.kind != directory::EntryKind::File {
+            continue;
+        }
+        let path = directory::source_file(&manifest, &args.root, index)?;
+        send(SendArgs {
+            connect: args.data_connect,
+            udp_target: args.udp_target,
+            file: path,
+            transport: Transport::Udp,
+            rate_mbps: args.rate_mbps,
+            min_rate_mbps: args.min_rate_mbps,
+            max_rate_mbps: args.max_rate_mbps,
+            repair_cooldown: args.repair_cooldown,
+            udp_payload_bytes: args.udp_payload_bytes,
+            report_interval: args.report_interval,
+            idle_timeout: args.idle_timeout,
+            key_file: args.key_file.clone(),
+        })?;
+        files = files.saturating_add(1);
+        bytes = bytes
+            .checked_add(entry.size)
+            .ok_or("directory byte count overflow")?;
+    }
+    println!(
+        "{{\"schema_version\":1,\"role\":\"directory-sender\",\"manifest_sha256\":\"{}\",\"entries\":{},\"files\":{},\"bytes\":{}}}",
+        auth::hex(&manifest.hash),
+        manifest.entries.len(),
+        files,
+        bytes
+    );
+    Ok(())
+}
+
+fn receive_dir(args: ReceiveDirArgs) -> AnyResult<()> {
+    let key = SecretKey::load(&args.key_file)?;
+    let manifest_listener = TcpListener::bind(args.listen)?;
+    let data_listener = TcpListener::bind(args.data_listen)?;
+    let udp = UdpSocket::bind(args.udp)?;
+    udp.set_read_timeout(Some(Duration::from_millis(20)))?;
+    let (mut control, _) = manifest_listener.accept()?;
+    control.set_nodelay(true)?;
+    control.set_read_timeout(Some(args.idle_timeout))?;
+    control.set_write_timeout(Some(args.idle_timeout))?;
+    let (hello, session) = auth::server_handshake(&mut control, &key)?;
+    let fields: Vec<_> = hello.split(' ').collect();
+    if fields.len() != 3 || fields[0] != "DIR" {
+        return Err("invalid directory manifest greeting".into());
+    }
+    let expected_hash = auth::decode_array::<32>(fields[1])?;
+    let expected_entries = usize::try_from(parse_canonical_u64(fields[2])?)?;
+    if expected_entries > directory::MAX_MANIFEST_ENTRIES {
+        return Err("directory manifest entry limit exceeded".into());
+    }
+    let mut reader = ControlReader::new(
+        control.try_clone()?,
+        session.clone(),
+        Direction::ClientToServer,
+    );
+    let mut writer = ControlWriter::new(control.try_clone()?, session, Direction::ServerToClient);
+    let mut encoded = String::new();
+    for _ in 0..expected_entries.saturating_add(2) {
+        let line = reader.recv()?;
+        if encoded.len().saturating_add(line.len()).saturating_add(1)
+            > directory::MAX_MANIFEST_BYTES
+        {
+            return Err("directory manifest byte limit exceeded".into());
+        }
+        encoded.push_str(&line);
+        encoded.push('\n');
+    }
+    if reader.recv()? != "MANIFEST_END" {
+        return Err("directory manifest did not terminate correctly".into());
+    }
+    let manifest = directory::parse(&encoded)?;
+    if manifest.hash != expected_hash || manifest.entries.len() != expected_entries {
+        return Err("directory manifest differs from authenticated greeting".into());
+    }
+    let staging = directory::prepare_staging(&manifest, &args.out)?;
+    writer.send(&format!("MANIFEST_OK {}", auth::hex(&manifest.hash)))?;
+    drop(reader);
+    drop(writer);
+    drop(control);
+
+    let mut files = 0_u64;
+    let mut bytes = 0_u64;
+    for (index, entry) in manifest.entries.iter().enumerate() {
+        if entry.kind != directory::EntryKind::File {
+            continue;
+        }
+        let out = directory::file_destination(&manifest, &staging, index)?;
+        receive_on(
+            &ReceiveArgs {
+                listen: args.data_listen,
+                udp: args.udp,
+                out,
+                idle_timeout: args.idle_timeout,
+                key_file: args.key_file.clone(),
+            },
+            &data_listener,
+            &udp,
+        )?;
+        files = files.saturating_add(1);
+        bytes = bytes
+            .checked_add(entry.size)
+            .ok_or("directory byte count overflow")?;
+    }
+    directory::install(&manifest, &staging, &args.out)?;
+    println!(
+        "{{\"schema_version\":1,\"role\":\"directory-receiver\",\"manifest_sha256\":\"{}\",\"entries\":{},\"files\":{},\"bytes\":{}}}",
+        auth::hex(&manifest.hash),
+        manifest.entries.len(),
+        files,
+        bytes
+    );
+    Ok(())
 }
 
 fn send(args: SendArgs) -> AnyResult<()> {
@@ -1321,10 +1607,15 @@ impl Pacer {
 }
 
 fn receive(args: ReceiveArgs) -> AnyResult<()> {
-    let key = SecretKey::load(&args.key_file)?;
     let udp = UdpSocket::bind(args.udp)?;
     udp.set_read_timeout(Some(Duration::from_millis(20)))?;
     let listener = TcpListener::bind(args.listen)?;
+    receive_on(&args, &listener, &udp)
+}
+
+fn receive_on(args: &ReceiveArgs, listener: &TcpListener, udp: &UdpSocket) -> AnyResult<()> {
+    let key = SecretKey::load(&args.key_file)?;
+    let udp = udp.try_clone()?;
     let (mut control, peer) = listener.accept()?;
     control.set_nodelay(true)?;
     control.set_read_timeout(Some(args.idle_timeout))?;
@@ -1372,7 +1663,7 @@ fn receive(args: ReceiveArgs) -> AnyResult<()> {
                 hello.report_interval.as_millis()
             ))?;
             receive_tcp4(
-                &listener,
+                listener,
                 &mut control_writer,
                 control_reader,
                 (&temporary, &args.out),

@@ -259,10 +259,11 @@ empty components, `.` and `..`, NUL bytes, paths over 4,096 bytes, symlinks, and
 non-regular filesystem objects fail closed. The manifest is bounded to one million
 entries and carries a SHA-256 digest over its canonical header and entries.
 
-The manifest records regular-file size and SHA-256 plus the low twelve permission
+The manifest records regular-file size and SHA-256 plus the nine ordinary permission
 bits and nanosecond modification time for files and directories. Ownership, ACLs,
 extended attributes, hard-link identity, sparse extents, devices, sockets, FIFOs,
-and symlinks are not preserved in the first directory version. The receiver must
+and symlinks are not preserved in the first directory version. Set-user-ID,
+set-group-ID, and sticky bits are deliberately stripped. The receiver must
 not follow destination symlinks while validating or installing paths.
 
 The intended receiver policy is replace-whole-tree, not merge. It validates the
