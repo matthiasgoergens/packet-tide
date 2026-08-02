@@ -94,3 +94,16 @@ On `spider`, run the whole test at reduced priority:
 ```sh
 nice -n 10 ionice -c2 -n7 bash lab/test-resume.sh
 ```
+
+## Liveness regression
+
+`test-liveness.sh` pauses each UDP endpoint in turn while keeping its authenticated
+TCP control connection open. It requires the peer to fail within the configured
+idle deadline, checks that receiver resume state survives sender silence, and
+guards against regressing to checking feedback only after the original-data pass.
+The CI quality job runs this test with a 500 ms deadline. To run it against an
+already-built debug binary on `spider`:
+
+```sh
+nice -n 10 ionice -c2 -n7 bash lab/test-liveness.sh target/debug/tsunami-udp
+```

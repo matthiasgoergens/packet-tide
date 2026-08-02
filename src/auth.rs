@@ -173,33 +173,33 @@ pub(crate) fn client_handshake(
 ) -> AnyResult<SessionAuth> {
     let challenge_line = read_line_limited(stream, MAX_HANDSHAKE_LINE)?;
     let challenge_hex = challenge_line
-        .strip_prefix("TSU2C ")
-        .ok_or("receiver did not offer a TSU2 challenge")?;
+        .strip_prefix("TSU3C ")
+        .ok_or("receiver did not offer a TSU3 challenge")?;
     let challenge = decode_array::<NONCE_LEN>(challenge_hex)?;
     let hello_mac = hmac_sha256(
         &key.0,
-        &joined(b"tsu2 client hello\0", &[&challenge, hello.as_bytes()]),
+        &joined(b"tsu3 client hello\0", &[&challenge, hello.as_bytes()]),
     );
-    writeln!(stream, "TSU2 {hello} {}", hex(&hello_mac))?;
+    writeln!(stream, "TSU3 {hello} {}", hex(&hello_mac))?;
     stream.flush()?;
 
     let server_line = read_line_limited(stream, MAX_HANDSHAKE_LINE)?;
     let fields: Vec<_> = server_line.split_whitespace().collect();
-    if fields.len() != 3 || fields[0] != "TSU2S" {
-        return Err("invalid TSU2 server response".into());
+    if fields.len() != 3 || fields[0] != "TSU3S" {
+        return Err("invalid TSU3 server response".into());
     }
     let server_nonce = decode_array::<NONCE_LEN>(fields[1])?;
     let supplied = decode_array::<32>(fields[2])?;
     let transcript = joined(
-        b"tsu2 transcript\0",
+        b"tsu3 transcript\0",
         &[&challenge, hello.as_bytes(), &server_nonce],
     );
-    let expected = hmac_sha256(&key.0, &joined(b"tsu2 server hello\0", &[&transcript]));
+    let expected = hmac_sha256(&key.0, &joined(b"tsu3 server hello\0", &[&transcript]));
     if !constant_time_eq(&supplied, &expected) {
         return Err("receiver authentication failed".into());
     }
-    let finish = hmac_sha256(&key.0, &joined(b"tsu2 client finish\0", &[&transcript]));
-    writeln!(stream, "TSU2F {}", hex(&finish))?;
+    let finish = hmac_sha256(&key.0, &joined(b"tsu3 client finish\0", &[&transcript]));
+    writeln!(stream, "TSU3F {}", hex(&finish))?;
     stream.flush()?;
     Ok(derive_session(&key.0, &transcript))
 }
@@ -210,18 +210,18 @@ pub(crate) fn server_handshake(
 ) -> AnyResult<(String, SessionAuth)> {
     let mut challenge = [0_u8; NONCE_LEN];
     random_bytes(&mut challenge)?;
-    writeln!(stream, "TSU2C {}", hex(&challenge))?;
+    writeln!(stream, "TSU3C {}", hex(&challenge))?;
     stream.flush()?;
 
     let client_line = read_line_limited(stream, MAX_HANDSHAKE_LINE)?;
     let body = client_line
-        .strip_prefix("TSU2 ")
-        .ok_or("invalid TSU2 client greeting")?;
+        .strip_prefix("TSU3 ")
+        .ok_or("invalid TSU3 client greeting")?;
     let (hello, mac_hex) = body.rsplit_once(' ').ok_or("missing client greeting MAC")?;
     let supplied = decode_array::<32>(mac_hex)?;
     let expected = hmac_sha256(
         &key.0,
-        &joined(b"tsu2 client hello\0", &[&challenge, hello.as_bytes()]),
+        &joined(b"tsu3 client hello\0", &[&challenge, hello.as_bytes()]),
     );
     if !constant_time_eq(&supplied, &expected) {
         return Err("client authentication failed".into());
@@ -230,18 +230,18 @@ pub(crate) fn server_handshake(
     let mut server_nonce = [0_u8; NONCE_LEN];
     random_bytes(&mut server_nonce)?;
     let transcript = joined(
-        b"tsu2 transcript\0",
+        b"tsu3 transcript\0",
         &[&challenge, hello.as_bytes(), &server_nonce],
     );
-    let response = hmac_sha256(&key.0, &joined(b"tsu2 server hello\0", &[&transcript]));
-    writeln!(stream, "TSU2S {} {}", hex(&server_nonce), hex(&response))?;
+    let response = hmac_sha256(&key.0, &joined(b"tsu3 server hello\0", &[&transcript]));
+    writeln!(stream, "TSU3S {} {}", hex(&server_nonce), hex(&response))?;
     stream.flush()?;
     let finish_line = read_line_limited(stream, MAX_HANDSHAKE_LINE)?;
     let supplied_finish = finish_line
-        .strip_prefix("TSU2F ")
+        .strip_prefix("TSU3F ")
         .ok_or("invalid client finish")?;
     let supplied_finish = decode_array::<32>(supplied_finish)?;
-    let expected_finish = hmac_sha256(&key.0, &joined(b"tsu2 client finish\0", &[&transcript]));
+    let expected_finish = hmac_sha256(&key.0, &joined(b"tsu3 client finish\0", &[&transcript]));
     if !constant_time_eq(&supplied_finish, &expected_finish) {
         return Err("client finish authentication failed".into());
     }
@@ -257,7 +257,7 @@ pub(crate) fn random_session() -> AnyResult<[u8; 16]> {
 pub(crate) fn lane_mac(key: &[u8; 32], session: &[u8; 16], lane: usize) -> [u8; 32] {
     hmac_sha256(
         key,
-        &joined(b"tsu2 lane\0", &[session, &(lane as u64).to_be_bytes()]),
+        &joined(b"tsu3 lane\0", &[session, &(lane as u64).to_be_bytes()]),
     )
 }
 
@@ -267,7 +267,7 @@ pub(crate) fn udp_tag(key: &[u8; 32], packet_without_tag: &[u8]) -> [u8; UDP_TAG
 }
 
 pub(crate) fn udp_tag_parts(key: &[u8; 32], header: &[u8], payload: &[u8]) -> [u8; UDP_TAG_LEN] {
-    let full = hmac_sha256_parts(key, &[b"tsu2 udp\0", header, payload]);
+    let full = hmac_sha256_parts(key, &[b"tsu3 udp\0", header, payload]);
     full[..UDP_TAG_LEN].try_into().expect("fixed tag length")
 }
 
@@ -311,7 +311,7 @@ pub(crate) fn decode_array<const N: usize>(value: &str) -> AnyResult<[u8; N]> {
 }
 
 fn derive_session(psk: &[u8; 32], transcript: &[u8]) -> SessionAuth {
-    let root = hmac_sha256(psk, &joined(b"tsu2 session root\0", &[transcript]));
+    let root = hmac_sha256(psk, &joined(b"tsu3 session root\0", &[transcript]));
     let derive = |label: &[u8]| hmac_sha256(&root, label);
     let session_full = derive(b"session id");
     SessionAuth {
@@ -339,7 +339,7 @@ fn control_mac_input(
         Direction::ServerToClient => b's',
     };
     joined(
-        b"tsu2 control\0",
+        b"tsu3 control\0",
         &[
             session,
             &[direction],

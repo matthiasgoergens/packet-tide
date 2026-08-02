@@ -84,12 +84,12 @@ tsunami-udp keygen --out transfer.key
 
 tsunami-udp receive \
   --listen 0.0.0.0:9000 --udp 0.0.0.0:9001 --out received.bin \
-  --key-file transfer.key
+  --key-file transfer.key --idle-timeout-ms 30000
 
 tsunami-udp send \
   --connect RECEIVER:9000 --udp-target RECEIVER:9001 \
   --file source.bin --transport udp --rate-mbps 100 \
-  --key-file transfer.key
+  --key-file transfer.key --idle-timeout-ms 30000
 ```
 
 Allow inbound TCP 9000 and UDP 9001 at the receiver. `tcp` and `tcp4` are also
@@ -98,7 +98,17 @@ congestion controller: start below the expected path capacity and increase it
 carefully, because an excessive rate creates self-inflicted loss and may trigger
 network policing.
 
-The v0.1 TSU2 protocol uses a fresh mutual PSK challenge-response handshake,
+Both endpoints default to a 30-second authenticated-control idle timeout. During
+UDP transfer the sender emits `PING` heartbeats and the receiver answers `PONG`;
+missing reports also prove receiver liveness. A local UDP failure sends a
+best-effort authenticated `CANCEL`, while silence or connection loss aborts within
+the configured timeout and leaves the receiver's resumable partial object intact.
+Values from 500 milliseconds through one hour are accepted.
+
+The v0.1 release uses TSU2. Current development uses the incompatible TSU3 wire
+protocol, which adds bounded liveness, authenticated cancellation, heartbeats,
+and an explicit completion acknowledgement. Both use a fresh mutual PSK
+challenge-response handshake,
 direction-specific sequenced HMAC-SHA256 control messages, authenticated TCP4
 lane greetings, and a 128-bit truncated HMAC-SHA256 tag on every UDP datagram.
 It rejects the earlier unauthenticated TSU1 wire format rather than downgrading.
@@ -111,7 +121,7 @@ Interrupted UDP transfers
 retain a stable `.part` file and durable `.part.map` receipt checkpoint beside the
 destination. Repeating the same command resumes when size and hash match; a
 different object safely starts over. Resume maps are protocol-versioned and are
-never shared across TSU1 and TSU2.
+never shared across TSU1, TSU2, and TSU3.
 
 The receiver syncs data before atomically publishing each receipt checkpoint.
 Consequently, a crash can cause a few chunks to be retransmitted but cannot make a
