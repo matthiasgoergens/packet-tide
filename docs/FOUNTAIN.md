@@ -5,10 +5,13 @@ Status: codec foundation only; not yet selectable on the transfer wire.
 ## Codec choice
 
 Use systematic RaptorQ as specified by [RFC 6330](https://www.rfc-editor.org/rfc/rfc6330.html),
-via the pinned Apache-2.0 [`raptorq` 2.0.1 crate](https://docs.rs/raptorq/2.0.1/raptorq/).
+via the pinned Apache-2.0 [`raptorq` 1.8.1 crate](https://docs.rs/raptorq/1.8.1/raptorq/).
 Do not introduce a bespoke XOR or LT-code variant. RaptorQ supplies the original
 source symbols first and can then generate repair symbols without a predetermined
 upper count.
+
+Version 1.8.1 is intentionally used instead of 2.x: the latter's x86-64 AVX-512
+implementation does not compile on Packet Tide's Rust 1.88 minimum toolchain.
 
 ## Bounded Packet Tide profile
 
