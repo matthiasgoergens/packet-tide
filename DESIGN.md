@@ -244,14 +244,37 @@ transfer succeeded.
 
 ## Pacing
 
-The baseline exposes an explicit fixed rate, for example `--rate 800mbps`. Useful
-experiments should also include an unlimited mode to demonstrate the effects of
-sender, switch, and receiver queue overflow.
+UDP uses bounded automatic pacing by default. The controller increases its rate
+while authenticated useful receive throughput follows and reduces it when extra
+sending produces stalled progress, duplicate work, or receiver-side socket drops.
+An explicit `--rate-mbps` retains the fixed-rate baseline for experiments.
 
-Automatic rate selection comes later. A deliberately aggressive controller can
-increase its rate while observed receive throughput follows and reduce it when
-additional sending produces only loss, delayed feedback, or receiver-side drops.
-This is about avoiding self-inflicted waste even when fairness is not a goal.
+## Directory manifest and installation policy
+
+The directory protocol begins with a canonical `PTM1` manifest. Paths are raw
+Unix path bytes encoded as lowercase hexadecimal, so locale and Unicode
+normalization cannot change their identity. Entries are strictly byte-sorted and
+unique. Every non-root parent must appear earlier as a directory. Absolute paths,
+empty components, `.` and `..`, NUL bytes, paths over 4,096 bytes, symlinks, and
+non-regular filesystem objects fail closed. The manifest is bounded to one million
+entries and carries a SHA-256 digest over its canonical header and entries.
+
+The manifest records regular-file size and SHA-256 plus the nine ordinary permission
+bits and nanosecond modification time for files and directories. Ownership, ACLs,
+extended attributes, hard-link identity, sparse extents, devices, sockets, FIFOs,
+and symlinks are not preserved in the first directory version. Set-user-ID,
+set-group-ID, and sticky bits are deliberately stripped. The receiver must
+not follow destination symlinks while validating or installing paths.
+
+The intended receiver policy is replace-whole-tree, not merge. It validates the
+complete authenticated manifest before creating anything, receives files beneath
+a sibling staging directory named from the manifest hash, verifies every object,
+applies file metadata, then directory metadata from deepest to shallowest, syncs,
+and atomically renames the staging tree into place. An existing destination is a
+conflict and fails unless a future explicit replacement policy is selected.
+Interrupted transfers retain only the hash-bound staging tree and per-file receipt
+maps; reconnecting with the same manifest resumes it, while a different manifest
+cannot reuse it.
 
 ## Known limitations of the baseline
 
@@ -264,7 +287,7 @@ This is about avoiding self-inflicted waste even when fairness is not a goal.
   not an individual user.
 - Dropping or flooding traffic can still deny service; authentication does not
   make UDP available under attack.
-- NAT traversal, path migration, directory trees, metadata preservation, sparse
+- NAT traversal, path migration, directory installation, sparse
   files, and rsync-style reuse are out of scope initially.
 
 These are acceptable because the baseline provides the correctness and benchmark
@@ -275,16 +298,15 @@ reference needed to decide whether fountain coding is actually beneficial.
 1. Transfer directory manifests and preserve metadata.
 2. Reuse existing destination data through content-addressed or content-defined
    chunks.
-3. Add automatic rate adaptation while retaining a fixed-rate override.
-4. Optionally add confidentiality and forward secrecy using an audited secure
+3. Optionally add confidentiality and forward secrecy using an audited secure
    transport rather than extending the MAC-only construction ad hoc.
-5. Replace selective retransmission, optionally, with systematic fountain coding:
+4. Replace selective retransmission, optionally, with systematic fountain coding:
    send original symbols first, then repair symbols.
-6. Bound fountain-code memory and decoding cost by using independent generations,
+5. Bound fountain-code memory and decoding cost by using independent generations,
    roughly 4-32 MiB each.
-7. Let the receiver declare each generation decodable, while retaining a reliable
+6. Let the receiver declare each generation decodable, while retaining a reliable
    final completion handshake and whole-file verification.
-8. Evaluate rsync integration only after standalone transport benchmarks establish
+7. Evaluate rsync integration only after standalone transport benchmarks establish
    where the new protocol helps and where it does not.
 
 Fountain codes address loss recovery; they do not remove the need for pacing.

@@ -63,6 +63,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
+name = "packet-tide"
+version = "0.2.0-alpha.1"
+dependencies = [
+ "libc",
+ "sha2",
+]
+
+[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -71,13 +79,6 @@ dependencies = [
  "cfg-if",
  "cpufeatures",
  "digest",
-]
-
-[[package]]
-name = "packet-tide"
-version = "0.2.0-alpha.1"
-dependencies = [
- "sha2",
 ]
 
 [[package]]

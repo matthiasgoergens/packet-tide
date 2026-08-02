@@ -117,6 +117,33 @@ best-effort authenticated `CANCEL`, while silence or connection loss aborts with
 the configured timeout and leaves the receiver's resumable partial object intact.
 Values from 500 milliseconds through one hour are accepted.
 
+### Directory trees
+
+Directory transfer uses a separate authenticated manifest port and reuses one TCP
+data listener plus one UDP socket for each regular file in canonical order:
+
+```sh
+packet-tide receive-dir \
+  --listen 0.0.0.0:8999 --data-listen 0.0.0.0:9000 \
+  --udp 0.0.0.0:9001 --out received-tree --key-file transfer.key
+
+packet-tide send-dir \
+  --connect RECEIVER:8999 --data-connect RECEIVER:9000 \
+  --udp-target RECEIVER:9001 --root source-tree --key-file transfer.key
+```
+
+Only regular files and directories are accepted. Paths are transmitted as raw
+Unix bytes in a canonical, SHA-256-bound manifest; absolute paths, traversal,
+symlinks, and special files fail closed. Ordinary `rwx` permission bits and
+nanosecond modification times are preserved. Ownership, ACLs, extended attributes,
+hard-link identity, sparse extents, and special permission bits are not preserved.
+
+The receiver never merges into an existing destination. It resumes only beneath
+a sibling staging tree bound to the exact manifest hash, verifies every file,
+applies metadata, and atomically renames the complete tree into place. Thus an
+interruption cannot expose a partially populated destination tree. Single-file
+`send` and `receive` remain available as the underlying primitive.
+
 The sender offers the UDP file-data payload and receiver feedback interval in the
 authenticated handshake. Defaults are 1,172 bytes and 50 ms; accepted bounds are
 256–1,424 bytes and 10–10,000 ms. The receiver either accepts those exact values
