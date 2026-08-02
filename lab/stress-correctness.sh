@@ -9,7 +9,7 @@ fi
 OUTPUT_DIR=$1
 SCHEDULE_SEED=${2:-8421}
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-WORK_RESULTS=/tmp/tsunami-udp-lab/results
+WORK_RESULTS=/tmp/packet-tide-lab/results
 DESIGN="$OUTPUT_DIR/design.tsv"
 
 mkdir -p "$OUTPUT_DIR"

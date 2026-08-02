@@ -11,7 +11,7 @@ RANDOMIZATION_SEED=$2
 TREATMENTS_CSV=${3:-udp,tcp-cubic,tcp-bbr,tcp4-cubic}
 ROOT=${TSU_PROJECT_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}
 RUN_ONE="$ROOT/lab/run-one.sh"
-WORK_RESULTS=/tmp/tsunami-udp-lab/results
+WORK_RESULTS=/tmp/packet-tide-lab/results
 DESIGN="$OUTPUT_DIR/design.tsv"
 QUALITY="$OUTPUT_DIR/block-quality.jsonl"
 

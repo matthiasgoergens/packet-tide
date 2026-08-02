@@ -36,9 +36,9 @@ esac
 [[ $FILE_BYTES =~ ^[0-9]+$ ]] || { echo "invalid file size" >&2; exit 2; }
 
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-BINARY="$ROOT/target/release/tsunami-udp"
-DATA=/tmp/tsunami-udp-lab/data
-RESULTS=/tmp/tsunami-udp-lab/results
+BINARY="$ROOT/target/release/packet-tide"
+DATA=/tmp/packet-tide-lab/data
+RESULTS=/tmp/packet-tide-lab/results
 AUTH_KEY=${TSU_AUTH_KEY_FILE:-$DATA/auth.key}
 SOURCE="$DATA/source-$FILE_BYTES-seed1.bin"
 OUTPUT="$DATA/output-$TRANSPORT.bin"

@@ -180,7 +180,7 @@ mod tests {
 
     fn test_destination(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
-            "tsunami-udp-{label}-{}-{}",
+            "packet-tide-{label}-{}-{}",
             std::process::id(),
             std::thread::current().name().unwrap_or("test")
         ))

@@ -2,27 +2,27 @@
 
 The initial lab runs on `spider` inside three Linux network namespaces. It creates
 only `tsu-bench-s`, `tsu-bench-r`, and `tsu-bench-d`, plus files below
-`/tmp/tsunami-udp-lab`.
+`/tmp/packet-tide-lab`.
 
 Run remote workloads at reduced CPU and I/O priority:
 
 ```sh
-ssh spider 'cd /tmp/tsunami-udp-lab/project && \
+ssh spider 'cd /tmp/packet-tide-lab/project && \
   sudo nice -n 10 ionice -c2 -n7 ./lab/setup.sh'
 
-ssh spider 'cd /tmp/tsunami-udp-lab/project && \
+ssh spider 'cd /tmp/packet-tide-lab/project && \
   sudo nice -n 10 ionice -c2 -n7 ./lab/run-one.sh udp 10485760 100 20 0.1 1'
 
-ssh spider 'cd /tmp/tsunami-udp-lab/project && \
+ssh spider 'cd /tmp/packet-tide-lab/project && \
   sudo nice -n 10 ionice -c2 -n7 ./lab/run-one.sh rsync 10485760 100 20 0.1 1'
 
-ssh spider 'cd /tmp/tsunami-udp-lab/project && \
+ssh spider 'cd /tmp/packet-tide-lab/project && \
   sudo nice -n 10 ionice -c2 -n7 ./lab/cleanup.sh'
 ```
 
 `run-one.sh` transfers one deterministic incompressible file, verifies it by
 SHA-256 and byte comparison, and writes a uniquely block-identified JSON result
-below `/tmp/tsunami-udp-lab/results`.
+below `/tmp/packet-tide-lab/results`.
 
 `run-matrix.sh` accepts rows of `FILE_BYTES RATE_MBIT RTT_MS LOSS_PERCENT SEED`,
 runs the configured CSV treatment list for every row, then writes `summary.json`
@@ -105,5 +105,5 @@ The CI quality job runs this test with a 500 ms deadline. To run it against an
 already-built debug binary on `spider`:
 
 ```sh
-nice -n 10 ionice -c2 -n7 bash lab/test-liveness.sh target/debug/tsunami-udp
+nice -n 10 ionice -c2 -n7 bash lab/test-liveness.sh target/debug/packet-tide
 ```

@@ -55,7 +55,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: release-source
-          path: target/package/tsunami-udp-*.crate
+          path: target/package/packet-tide-*.crate
           if-no-files-found: error
           retention-days: 7
 
@@ -95,12 +95,12 @@ jobs:
         run: |
           set -euo pipefail
           version=${RELEASE_TAG#v}
-          binary="target/$TARGET/release/tsunami-udp"
-          test "$("$binary" --version)" = "tsunami-udp $version"
+          binary="target/$TARGET/release/packet-tide"
+          test "$("$binary" --version)" = "packet-tide $version"
           file "$binary" | grep -Eq 'static(-pie|ally) linked'
-          directory="tsunami-udp-$version-$TARGET"
+          directory="packet-tide-$version-$TARGET"
           mkdir -p "dist/$directory"
-          install -m 0755 "$binary" "dist/$directory/tsunami-udp"
+          install -m 0755 "$binary" "dist/$directory/packet-tide"
           install -m 0644 README.md LICENSE "dist/$directory/"
           source_date_epoch=$(git show -s --format=%ct HEAD)
           tar --sort=name --mtime="@$source_date_epoch" --owner=0 --group=0 --numeric-owner \

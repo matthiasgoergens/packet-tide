@@ -1,17 +1,18 @@
 [package]
-name = "tsunami-udp"
-version = "0.1.0"
+name = "packet-tide"
+version = "0.2.0-alpha.1"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
-description = "Experimental object-oriented file transfer over TCP and UDP"
+description = "Authenticated whole-file transfer over UDP and TCP"
 readme = "README.md"
+repository = "https://github.com/matthiasgoergens/packet-tide"
 keywords = ["udp", "file-transfer", "networking"]
 categories = ["command-line-utilities", "network-programming"]
 include = ["/src/**", "/Cargo.toml", "/Cargo.lock", "/README.md", "/DESIGN.md", "/LICENSE", "/release/README.md"]
 
 [[bin]]
-name = "tsunami-udp"
+name = "packet-tide"
 path = "src/main.rs"
 
 [dependencies]

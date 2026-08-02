@@ -1,9 +1,9 @@
-# tsunami-udp
+# Packet Tide
 
 [![CI](https://github.com/matthiasgoergens/packet-tide/actions/workflows/ci.yml/badge.svg)](https://github.com/matthiasgoergens/packet-tide/actions/workflows/ci.yml)
 
-An experimental file-transfer tool that uses a small control path and paced UDP
-for bulk data. The long-term direction includes fountain codes, but the first
+An authenticated whole-file transfer tool that uses a small control path and
+paced UDP for bulk data. The long-term direction includes fountain codes, but the first
 implementation deliberately uses a much simpler selective-repeat protocol.
 
 The project is intended as an open-source, modern spiritual successor to the
@@ -57,8 +57,12 @@ The Rust 1.88+ implementation supports Linux. Install from a source checkout:
 
 ```sh
 cargo install --locked --path .
-tsunami-udp --version
+packet-tide --version
 ```
+
+The historical v0.1.0 release and its TSU2 wire protocol use the original
+`tsunami-udp` executable and artifact names. Current development is Packet Tide
+0.2.0-alpha.1 and uses the incompatible TSU3 protocol; mixed versions fail closed.
 
 Tagged releases publish static Linux archives for x86-64 and ARM64, a clean
 Cargo source package, and `SHA256SUMS`. After downloading an archive and the
@@ -66,9 +70,9 @@ checksum file from the [Packet Tide releases page](https://github.com/matthiasgo
 
 ```sh
 sha256sum --check --ignore-missing SHA256SUMS
-tar -xzf tsunami-udp-VERSION-TARGET.tar.gz
-sudo install -m 0755 tsunami-udp-VERSION-TARGET/tsunami-udp /usr/local/bin/
-tsunami-udp --version
+tar -xzf packet-tide-VERSION-TARGET.tar.gz
+sudo install -m 0755 packet-tide-VERSION-TARGET/packet-tide /usr/local/bin/
+packet-tide --version
 ```
 
 See [release/README.md](release/README.md) for the exact artifact names,
@@ -80,13 +84,13 @@ existing path. Both sides reject keys that are not exactly 32 raw bytes or are
 accessible by group/other users.
 
 ```sh
-tsunami-udp keygen --out transfer.key
+packet-tide keygen --out transfer.key
 
-tsunami-udp receive \
+packet-tide receive \
   --listen 0.0.0.0:9000 --udp 0.0.0.0:9001 --out received.bin \
   --key-file transfer.key --idle-timeout-ms 30000
 
-tsunami-udp send \
+packet-tide send \
   --connect RECEIVER:9000 --udp-target RECEIVER:9001 \
   --file source.bin --transport udp --rate-mbps 100 \
   --key-file transfer.key --idle-timeout-ms 30000

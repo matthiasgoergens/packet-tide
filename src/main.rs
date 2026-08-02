@@ -112,7 +112,7 @@ fn run() -> AnyResult<()> {
             Ok(())
         }
         Some("--version" | "-V") => {
-            println!("tsunami-udp {}", env!("CARGO_PKG_VERSION"));
+            println!("packet-tide {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
         _ => {
@@ -124,12 +124,12 @@ fn run() -> AnyResult<()> {
 
 fn usage() {
     eprintln!(
-        "usage:\n  tsunami-udp receive --listen ADDR --udp ADDR --out PATH --key-file PATH \
+        "usage:\n  packet-tide receive --listen ADDR --udp ADDR --out PATH --key-file PATH \
          [--idle-timeout-ms N]\n  \
-         tsunami-udp send --connect ADDR --udp-target ADDR --file PATH \
+         packet-tide send --connect ADDR --udp-target ADDR --file PATH \
          --transport tcp|tcp4|udp --key-file PATH [--rate-mbps N] \
          [--repair-cooldown-ms N] [--idle-timeout-ms N]\n  \
-         tsunami-udp keygen --out PATH"
+         packet-tide keygen --out PATH"
     );
 }
 
@@ -1556,7 +1556,7 @@ mod tests {
     #[test]
     fn packet_kind_distinguishes_originals_and_repairs() {
         let path =
-            std::env::temp_dir().join(format!("tsunami-udp-packet-kind-{}", std::process::id()));
+            std::env::temp_dir().join(format!("packet-tide-packet-kind-{}", std::process::id()));
         fs::write(&path, b"payload").unwrap();
         let file = File::open(&path).unwrap();
         let auth = auth::test_session();
@@ -1724,7 +1724,7 @@ mod tests {
     #[test]
     fn object_hash_advances_only_over_contiguous_received_chunks() {
         let path =
-            std::env::temp_dir().join(format!("tsunami-udp-hash-frontier-{}", std::process::id()));
+            std::env::temp_dir().join(format!("packet-tide-hash-frontier-{}", std::process::id()));
         let bytes = vec![0x5a; PAYLOAD_SIZE * 3];
         fs::write(&path, &bytes).unwrap();
         let file = File::open(&path).unwrap();
