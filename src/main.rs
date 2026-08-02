@@ -16,6 +16,8 @@ use std::time::{Duration, Instant};
 mod auth;
 mod cdc;
 mod directory;
+#[allow(dead_code)]
+mod fountain;
 mod resume;
 
 use auth::{ControlReader, ControlWriter, Direction, SecretKey, SessionAuth};

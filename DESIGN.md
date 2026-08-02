@@ -334,3 +334,5 @@ reference needed to decide whether fountain coding is actually beneficial.
 Fountain codes address loss recovery; they do not remove the need for pacing.
 They should be judged against this baseline under controlled latency and loss,
 including clean LAN conditions where coding overhead may not pay for itself.
+The selected bounded RaptorQ profile and its integration gates are recorded in
+[`docs/FOUNTAIN.md`](docs/FOUNTAIN.md).
