@@ -125,16 +125,16 @@ def stage(args: argparse.Namespace, run_id: str) -> tuple[str, dict[str, str]]:
         if endpoint == "receiver" and args.receiver_mode == "native":
             remote(
                 host,
-                f"pkill -TERM -f -- {quote('^' + work + '/tsunami-udp receive ')} 2>/dev/null || true\n",
+                f"pkill -TERM -f -- {quote('^' + work + '/packet-tide receive ')} 2>/dev/null || true\n",
                 check=False,
                 jump=jump,
             )
         remote(host, f"mkdir -p {quote(work)}\nchmod 700 {quote(work)}\n", jump=jump)
-        copy_to(endpoint_binaries[endpoint], host, f"{work}/tsunami-udp", jump)
+        copy_to(endpoint_binaries[endpoint], host, f"{work}/packet-tide", jump)
         copy_to(args.key_file, host, f"{work}/auth.key", jump)
         remote(
             host,
-            f"chmod 700 {quote(work + '/tsunami-udp')}\nchmod 600 {quote(work + '/auth.key')}\n",
+            f"chmod 700 {quote(work + '/packet-tide')}\nchmod 600 {quote(work + '/auth.key')}\n",
             jump=jump,
         )
     hashes = {
@@ -162,7 +162,7 @@ if [[ -n $ids ]]; then
 fi
 """
     else:
-        script += f"pkill -TERM -f -- {quote('^' + work + '/tsunami-udp receive ')} 2>/dev/null || true\n"
+        script += f"pkill -TERM -f -- {quote('^' + work + '/packet-tide receive ')} 2>/dev/null || true\n"
     if not keep:
         script += f"rm -rf {quote(work)}\n"
     remote(host, script, check=False, jump=jump)
@@ -210,7 +210,7 @@ def run_treatment(
         receiver_process = start_remote(
             args.receiver,
             f"""
-exec nice -n 10 ionice -c2 -n7 {quote(work + '/tsunami-udp')} receive \
+exec nice -n 10 ionice -c2 -n7 {quote(work + '/packet-tide')} receive \
   --listen 0.0.0.0:{control_port} --udp 0.0.0.0:{udp_port} \
   --out {quote(output)} --key-file {quote(work + '/auth.key')}
 """,
@@ -222,7 +222,7 @@ rm -f {quote(output)} {quote(output + '.part')} {quote(output + '.part.map')} {q
 nice -n 10 ionice -c2 -n7 {runtime} run -d --name {quote(receiver_name)} \
   -p {control_port}:9000/tcp -p {udp_port}:9001/udp \
   -v {quote(work)}:/work:z {image} \
-  /work/tsunami-udp receive --listen 0.0.0.0:9000 --udp 0.0.0.0:9001 \
+  /work/packet-tide receive --listen 0.0.0.0:9000 --udp 0.0.0.0:9001 \
   --out /work/{Path(output).name} --key-file /work/auth.key
 """
         remote(args.receiver, receiver_script, jump=args.receiver_proxy_jump)
@@ -260,7 +260,7 @@ exit 1
     sender_script = f"""
 nice -n 10 ionice -c2 -n7 {runtime} run --name {quote(sender_name)} --cap-add NET_ADMIN \
   -v {quote(work)}:/work:z {image} sh -lc \
-  {quote(f'iface=$(ip route show default | head -n1 | cut -d " " -f5); test -n "$iface"; ip link set dev "$iface" gso_max_size 1500 gso_ipv4_max_size 1500 gro_max_size 1500 gro_ipv4_max_size 1500; tc qdisc replace dev "$iface" root netem limit 10000 delay {scenario["rtt_ms"]}ms{netem_loss} rate {scenario["rate_mbit"]}mbit seed {seed} && exec /work/tsunami-udp send --connect {args.receiver_address}:{control_port} --udp-target {args.receiver_address}:{udp_port} --file /work/source-{scenario["file_bytes"]}.bin --transport {treatment} --rate-mbps {sender_rate_mbit} --repair-cooldown-ms {2 * float(scenario["rtt_ms"]) + 50:.0f} --key-file /work/auth.key')}
+  {quote(f'iface=$(ip route show default | head -n1 | cut -d " " -f5); test -n "$iface"; ip link set dev "$iface" gso_max_size 1500 gso_ipv4_max_size 1500 gro_max_size 1500 gro_ipv4_max_size 1500; tc qdisc replace dev "$iface" root netem limit 10000 delay {scenario["rtt_ms"]}ms{netem_loss} rate {scenario["rate_mbit"]}mbit seed {seed} && exec /work/packet-tide send --connect {args.receiver_address}:{control_port} --udp-target {args.receiver_address}:{udp_port} --file /work/source-{scenario["file_bytes"]}.bin --transport {treatment} --rate-mbps {sender_rate_mbit} --repair-cooldown-ms {2 * float(scenario["rtt_ms"]) + 50:.0f} --key-file /work/auth.key')}
 """
     sent = remote(
         args.sender,

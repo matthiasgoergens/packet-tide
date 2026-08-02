@@ -12,7 +12,7 @@ RANDOMIZATION_SEED=${3:-20260731}
 TREATMENTS_CSV=${4:-udp,tcp,rsync}
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 RUN_ONE="$ROOT/lab/run-one.sh"
-WORK_RESULTS=/tmp/tsunami-udp-lab/results
+WORK_RESULTS=/tmp/packet-tide-lab/results
 DESIGN="$OUTPUT_DIR/design.tsv"
 
 mkdir -p "$OUTPUT_DIR"

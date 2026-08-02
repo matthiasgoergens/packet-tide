@@ -74,8 +74,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "tsunami-udp"
-version = "0.1.0"
+name = "packet-tide"
+version = "0.2.0-alpha.1"
 dependencies = [
  "sha2",
 ]

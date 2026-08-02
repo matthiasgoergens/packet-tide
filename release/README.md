@@ -12,11 +12,11 @@ smoke-tests the installed command:
 
 ```sh
 release/check-release.sh
-release/check-release.sh v0.1.0
+release/check-release.sh v0.2.0-alpha.1
 ```
 
-The optional tag must be exactly `vMAJOR.MINOR.PATCH`. The source package contains
-only the Rust source, locked dependency graph, license, and user/design documents;
+The optional tag must be exactly `vSEMVER`, including any prerelease suffix. The
+source package contains only the Rust source, locked dependency graph, license, and user/design documents;
 the lab and retained benchmark observations remain available in Git but are not
 part of an installable crate.
 
@@ -25,26 +25,28 @@ part of an installable crate.
 A matching tag makes the GitHub Actions release workflow build natively on x86-64
 and ARM64 Linux. It publishes:
 
-- `tsunami-udp-VERSION-x86_64-unknown-linux-musl.tar.gz`
-- `tsunami-udp-VERSION-aarch64-unknown-linux-musl.tar.gz`
-- `tsunami-udp-VERSION.crate`
+- `packet-tide-VERSION-x86_64-unknown-linux-musl.tar.gz`
+- `packet-tide-VERSION-aarch64-unknown-linux-musl.tar.gz`
+- `packet-tide-VERSION.crate`
 - `SHA256SUMS`
 
-The musl archives are statically linked and each contains `tsunami-udp`,
-`README.md`, and `LICENSE`. Verify an artifact before installing it:
+The musl archives are statically linked and each contains `packet-tide`,
+`README.md`, and `LICENSE`. The historical v0.1.0 release predates the rename and
+keeps its original `tsunami-udp` names. Verify a current artifact before
+installing it:
 
 ```sh
 sha256sum --check --ignore-missing SHA256SUMS
-tar -xzf tsunami-udp-VERSION-TARGET.tar.gz
-sudo install -m 0755 tsunami-udp-VERSION-TARGET/tsunami-udp /usr/local/bin/
+tar -xzf packet-tide-VERSION-TARGET.tar.gz
+sudo install -m 0755 packet-tide-VERSION-TARGET/packet-tide /usr/local/bin/
 ```
 
 To install from the clean source package instead:
 
 ```sh
-mkdir tsunami-source
-tar -xzf tsunami-udp-VERSION.crate -C tsunami-source
-cargo install --locked --path tsunami-source/tsunami-udp-VERSION
+mkdir packet-tide-source
+tar -xzf packet-tide-VERSION.crate -C packet-tide-source
+cargo install --locked --path packet-tide-source/packet-tide-VERSION
 ```
 
 ## Maintainer sequence

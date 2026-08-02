@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-binary=${1:-target/debug/tsunami-udp}
+binary=${1:-target/debug/packet-tide}
 timeout_ms=${IDLE_TIMEOUT_MS:-500}
 work=$(mktemp -d "${TMPDIR:-/tmp}/packet-tide-liveness.XXXXXX")
 receiver=

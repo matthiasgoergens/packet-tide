@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-BINARY=${TSU_BINARY:-"$ROOT/target/release/tsunami-udp"}
+BINARY=${PACKET_TIDE_BINARY:-${TSU_BINARY:-"$ROOT/target/release/packet-tide"}}
 SOURCE_COMMIT=${TSU_SOURCE_COMMIT:-unknown}
 FILE_BYTES=${TSU_RESUME_TEST_BYTES:-134217728}
 INTERRUPT_SECONDS=${TSU_RESUME_INTERRUPT_SECONDS:-5}

@@ -40,7 +40,7 @@ jobs:
       - name: Test bounded transfer liveness
         run: |
           cargo +"$RUST_TOOLCHAIN" build --locked
-          lab/test-liveness.sh target/debug/tsunami-udp
+          lab/test-liveness.sh target/debug/packet-tide
 
       - name: Validate release and benchmark tooling
         run: |

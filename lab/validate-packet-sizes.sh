@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-RESULTS=/tmp/tsunami-udp-lab/results
+RESULTS=/tmp/packet-tide-lab/results
 
 capture_pid=''
 stop_capture() {

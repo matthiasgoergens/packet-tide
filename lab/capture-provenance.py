@@ -58,8 +58,8 @@ def main() -> None:
             "bbr_module": command("modinfo", "tcp_bbr"),
         },
         "binary": {
-            "path": str(root / "target/release/tsunami-udp"),
-            "sha256": sha256(root / "target/release/tsunami-udp"),
+            "path": str(root / "target/release/packet-tide"),
+            "sha256": sha256(root / "target/release/packet-tide"),
         },
         "source_sha256": {
             str(path.relative_to(root)): sha256(path)
