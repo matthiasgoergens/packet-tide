@@ -26,7 +26,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Check out tagged source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ env.RELEASE_TAG }}
 
@@ -51,7 +51,7 @@ jobs:
         run: RUSTUP_TOOLCHAIN="$RUST_TOOLCHAIN" release/check-release.sh "$RELEASE_TAG"
 
       - name: Retain clean source package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-source
           path: target/package/tsunami-udp-*.crate
@@ -73,7 +73,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Check out tagged source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ env.RELEASE_TAG }}
 
@@ -106,7 +106,7 @@ jobs:
             -C dist -cf - "$directory" | gzip -9n >"dist/$directory.tar.gz"
 
       - name: Retain release archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.target }}
           path: dist/*.tar.gz
@@ -122,12 +122,12 @@ jobs:
       contents: write
     steps:
       - name: Check out tagged source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ env.RELEASE_TAG }}
 
       - name: Download validated artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: release-*
           path: dist
@@ -143,4 +143,11 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$RELEASE_TAG" dist/*.crate dist/*.tar.gz dist/SHA256SUMS --verify-tag --generate-notes --title "$RELEASE_TAG"
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" dist/*.crate dist/*.tar.gz dist/SHA256SUMS --clobber
+          else
+            gh release create "$RELEASE_TAG" dist/*.crate dist/*.tar.gz dist/SHA256SUMS \
+              --verify-tag --generate-notes --title "$RELEASE_TAG"
+          fi
