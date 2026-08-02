@@ -276,6 +276,31 @@ Interrupted transfers retain only the hash-bound staging tree and per-file recei
 maps; reconnecting with the same manifest resumes it, while a different manifest
 cannot reuse it.
 
+## Content-defined reuse
+
+Content reuse is an optional UDP setup phase. When enabled, the sender binds the
+chunk count and hash of a canonical `CDC1` manifest into the authenticated
+handshake, then sends the manifest over the sequenced control channel. The
+receiver caps it at one million entries and 64 MiB and checks canonical offsets,
+lengths, hashes, total size, and the authenticated manifest digest.
+
+Boundaries use a deterministic rolling gear hash with a 16 KiB minimum, 64 KiB
+target, and 256 KiB maximum. Each content chunk carries SHA-256. The receiver
+scans an explicitly selected local candidate without following symlinks, indexes
+bounded `(length, hash)` identities, reads matching bytes again, and verifies
+their digest before writing them at the new target offsets.
+
+Only fixed-size UDP ranges completely covered by verified content chunks enter
+the durable receipt bitmap. The receiver synchronizes the partial file and
+checkpoints that bitmap before sending authenticated `REUSED`, `H`, and `GO`
+messages. Existing resume receipts and newly reused ranges then share the same
+bounded repair protocol.
+
+An absent or unrelated candidate yields zero reusable ranges and the normal
+whole-file UDP pass. Reuse defaults off unless both endpoints opt in. The final
+authenticated whole-object SHA-256 remains authoritative; no local inventory or
+receipt claim can install an object that fails that check.
+
 ## Known limitations of the baseline
 
 - Missing reports can become expensive at high loss rates.
@@ -287,26 +312,23 @@ cannot reuse it.
   not an individual user.
 - Dropping or flooding traffic can still deny service; authentication does not
   make UDP available under attack.
-- NAT traversal, path migration, directory installation, sparse
-  files, and rsync-style reuse are out of scope initially.
+- NAT traversal, path migration, sparse files, and full rsync semantics remain
+  out of scope.
 
 These are acceptable because the baseline provides the correctness and benchmark
 reference needed to decide whether fountain coding is actually beneficial.
 
 ## Later milestones
 
-1. Transfer directory manifests and preserve metadata.
-2. Reuse existing destination data through content-addressed or content-defined
-   chunks.
-3. Optionally add confidentiality and forward secrecy using an audited secure
+1. Optionally add confidentiality and forward secrecy using an audited secure
    transport rather than extending the MAC-only construction ad hoc.
-4. Replace selective retransmission, optionally, with systematic fountain coding:
+2. Replace selective retransmission, optionally, with systematic fountain coding:
    send original symbols first, then repair symbols.
-5. Bound fountain-code memory and decoding cost by using independent generations,
+3. Bound fountain-code memory and decoding cost by using independent generations,
    roughly 4-32 MiB each.
-6. Let the receiver declare each generation decodable, while retaining a reliable
+4. Let the receiver declare each generation decodable, while retaining a reliable
    final completion handshake and whole-file verification.
-7. Evaluate rsync integration only after standalone transport benchmarks establish
+5. Evaluate rsync integration only after standalone transport benchmarks establish
    where the new protocol helps and where it does not.
 
 Fountain codes address loss recovery; they do not remove the need for pacing.

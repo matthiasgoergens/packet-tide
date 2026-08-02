@@ -534,6 +534,46 @@ pub(crate) fn source_file(
     Ok(path)
 }
 
+pub(crate) fn candidate_file(
+    manifest: &Manifest,
+    root: &Path,
+    entry_index: usize,
+) -> AnyResult<Option<PathBuf>> {
+    let entry = manifest
+        .entries
+        .get(entry_index)
+        .ok_or("manifest file index is out of range")?;
+    if entry.kind != EntryKind::File {
+        return Err("manifest entry is not a file".into());
+    }
+    match fs::symlink_metadata(root) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+        Ok(_) => return Err("reuse root is not a real directory".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    }
+    let relative = path_from_bytes(&entry.path);
+    let mut parent = root.to_owned();
+    if let Some(relative_parent) = relative.parent() {
+        for component in relative_parent.components() {
+            parent.push(component);
+            match fs::symlink_metadata(&parent) {
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+                Ok(_) => return Err("reuse path contains an unsafe parent".into()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    let path = root.join(relative);
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => Ok(Some(path)),
+        Ok(_) => Err("reuse candidate is not a real file".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
 pub(crate) fn install(manifest: &Manifest, staging: &Path, destination: &Path) -> AnyResult<()> {
     validate_staging_tree(manifest, staging, false)?;
     require_absent(destination, "directory destination already exists")?;

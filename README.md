@@ -39,8 +39,9 @@ file. It intentionally excludes directory synchronization, delta reuse, multiple
 files, compression, and restart/resume so that it measures the transports rather
 than unrelated synchronization work.
 
-Directory synchronization, content-defined chunk reuse, encryption, and fountain
-coding are later milestones. Version 0.1 authenticates
+Encryption and fountain coding are later milestones. Current development also
+contains opt-in directory transfer and content-defined reuse; both retain a full
+transfer fallback. Version 0.1 authenticates
 peers and traffic but deliberately does not encrypt file contents or metadata.
 
 Integration with rsync is also deferred. Once the standalone transport is correct
@@ -143,6 +144,41 @@ a sibling staging tree bound to the exact manifest hash, verifies every file,
 applies metadata, and atomically renames the complete tree into place. Thus an
 interruption cannot expose a partially populated destination tree. Single-file
 `send` and `receive` remain available as the underlying primitive.
+
+### Reusing content already at the receiver
+
+For a receiver that already has an older or similar file, enable the bounded
+content-defined inventory on the sender and name the local candidate on the
+receiver:
+
+```sh
+packet-tide receive \
+  --listen 0.0.0.0:9000 --udp 0.0.0.0:9001 --out received-new.bin \
+  --reuse-from received-old.bin --key-file transfer.key
+
+packet-tide send \
+  --connect RECEIVER:9000 --udp-target RECEIVER:9001 \
+  --file source-new.bin --transport udp --reuse-chunks true \
+  --key-file transfer.key
+```
+
+The sender authenticates a content-defined chunk manifest. The receiver scans its
+candidate without following symlinks, verifies each matching chunk with SHA-256,
+copies it into the partial object, makes it durable, and reports only fully
+covered UDP chunks as already present. Insertions and local edits can therefore
+preserve reuse beyond the changed region.
+
+Reuse defaults off. If either option is absent, the ordinary complete-file
+transfer runs. A missing or unrelated candidate also sends all bytes. Regardless
+of reuse, the receiver verifies the authenticated whole-file SHA-256 before
+atomically installing the result. Sender JSON includes `reused_bytes` and
+`reused_chunks`; `lab/test-reuse.sh` covers unchanged, edited, inserted,
+truncated, unrelated-candidate, and fallback cases.
+
+Directory transfer supports `--reuse-chunks true` on `send-dir` and
+`--reuse-from OLD_TREE` on `receive-dir`. Candidates are resolved by their
+manifest-relative raw path; missing files transfer in full, while symlinks and
+unsafe parent components fail closed.
 
 The sender offers the UDP file-data payload and receiver feedback interval in the
 authenticated handshake. Defaults are 1,172 bytes and 50 ms; accepted bounds are

@@ -1,12 +1,12 @@
 use sha2::{Digest, Sha256};
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
 use std::error::Error;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::FileExt;
+use std::os::unix::fs::{FileExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -14,6 +14,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 mod auth;
+mod cdc;
 mod directory;
 mod resume;
 
@@ -104,6 +105,7 @@ struct SendArgs {
     report_interval: Duration,
     idle_timeout: Duration,
     key_file: PathBuf,
+    reuse_chunks: bool,
 }
 
 #[derive(Debug)]
@@ -113,6 +115,7 @@ struct ReceiveArgs {
     out: PathBuf,
     idle_timeout: Duration,
     key_file: PathBuf,
+    reuse_from: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -129,6 +132,7 @@ struct SendDirArgs {
     report_interval: Duration,
     idle_timeout: Duration,
     key_file: PathBuf,
+    reuse_chunks: bool,
 }
 
 #[derive(Debug)]
@@ -139,6 +143,7 @@ struct ReceiveDirArgs {
     out: PathBuf,
     idle_timeout: Duration,
     key_file: PathBuf,
+    reuse_from: Option<PathBuf>,
 }
 
 fn main() {
@@ -166,6 +171,11 @@ fn run() -> AnyResult<()> {
             validate_options(&args, &["--root"])?;
             directory::print(Path::new(&option(&args, "--root")?))
         }
+        Some("chunks") => {
+            let args: Vec<_> = args.collect();
+            validate_options(&args, &["--file"])?;
+            cdc::print(Path::new(&option(&args, "--file")?))
+        }
         Some("--help" | "-h" | "help") => {
             usage();
             Ok(())
@@ -177,7 +187,7 @@ fn run() -> AnyResult<()> {
         _ => {
             usage();
             Err(
-                "expected send, receive, send-dir, receive-dir, manifest, or keygen subcommand"
+                "expected send, receive, send-dir, receive-dir, manifest, chunks, or keygen subcommand"
                     .into(),
             )
         }
@@ -187,20 +197,21 @@ fn run() -> AnyResult<()> {
 fn usage() {
     eprintln!(
         "usage:\n  packet-tide receive --listen ADDR --udp ADDR --out PATH --key-file PATH \
-         [--idle-timeout-ms N]\n  \
+         [--idle-timeout-ms N] [--reuse-from PATH]\n  \
          packet-tide send --connect ADDR --udp-target ADDR --file PATH \
          --transport tcp|tcp4|udp --key-file PATH [--rate-mbps N] \
          [--min-rate-mbps N] [--max-rate-mbps N] \
          [--repair-cooldown-ms N] [--udp-payload-bytes N] \
-         [--feedback-interval-ms N] [--idle-timeout-ms N]\n  \
+         [--feedback-interval-ms N] [--idle-timeout-ms N] [--reuse-chunks true|false]\n  \
          packet-tide receive-dir --listen ADDR --data-listen ADDR --udp ADDR \
-         --out PATH --key-file PATH [--idle-timeout-ms N]\n  \
+         --out PATH --key-file PATH [--idle-timeout-ms N] [--reuse-from PATH]\n  \
          packet-tide send-dir --connect ADDR --data-connect ADDR --udp-target ADDR \
          --root PATH --key-file PATH [--rate-mbps N] \
          [--min-rate-mbps N] [--max-rate-mbps N] \
          [--repair-cooldown-ms N] [--udp-payload-bytes N] \
-         [--feedback-interval-ms N] [--idle-timeout-ms N]\n  \
+         [--feedback-interval-ms N] [--idle-timeout-ms N] [--reuse-chunks true|false]\n  \
          packet-tide manifest --root PATH\n  \
+         packet-tide chunks --file PATH\n  \
          packet-tide keygen --out PATH"
     );
 }
@@ -261,6 +272,7 @@ fn parse_send(args: Vec<String>) -> AnyResult<SendArgs> {
             "--feedback-interval-ms",
             "--idle-timeout-ms",
             "--key-file",
+            "--reuse-chunks",
         ],
     )?;
     let parsed = SendArgs {
@@ -286,9 +298,13 @@ fn parse_send(args: Vec<String>) -> AnyResult<SendArgs> {
         report_interval: parse_report_interval(&args)?,
         idle_timeout: parse_idle_timeout(&args)?,
         key_file: option(&args, "--key-file")?.into(),
+        reuse_chunks: parse_bool_option(&args, "--reuse-chunks")?,
     };
     if parsed.report_interval >= parsed.idle_timeout {
         return Err("--feedback-interval-ms must be shorter than --idle-timeout-ms".into());
+    }
+    if parsed.reuse_chunks && parsed.transport != Transport::Udp {
+        return Err("--reuse-chunks is supported only by UDP".into());
     }
     if let Some(rate) = parsed.rate_mbps
         && (!rate.is_finite() || rate <= 0.0)
@@ -327,6 +343,7 @@ fn parse_send_dir(args: Vec<String>) -> AnyResult<SendDirArgs> {
             "--feedback-interval-ms",
             "--idle-timeout-ms",
             "--key-file",
+            "--reuse-chunks",
         ],
     )?;
     let parsed = SendDirArgs {
@@ -352,6 +369,7 @@ fn parse_send_dir(args: Vec<String>) -> AnyResult<SendDirArgs> {
         report_interval: parse_report_interval(&args)?,
         idle_timeout: parse_idle_timeout(&args)?,
         key_file: option(&args, "--key-file")?.into(),
+        reuse_chunks: parse_bool_option(&args, "--reuse-chunks")?,
     };
     validate_rate_configuration(
         parsed.rate_mbps,
@@ -382,6 +400,14 @@ fn validate_rate_configuration(
         return Err("--rate-mbps is a fixed-rate override and cannot be combined with automatic rate bounds".into());
     }
     Ok(())
+}
+
+fn parse_bool_option(args: &[String], name: &str) -> AnyResult<bool> {
+    match optional_option(args, name).as_deref() {
+        None | Some("false") => Ok(false),
+        Some("true") => Ok(true),
+        Some(_) => Err(format!("{name} must be true or false").into()),
+    }
 }
 
 fn parse_udp_payload_bytes(args: &[String]) -> AnyResult<usize> {
@@ -423,6 +449,7 @@ fn parse_receive(args: Vec<String>) -> AnyResult<ReceiveArgs> {
             "--out",
             "--key-file",
             "--idle-timeout-ms",
+            "--reuse-from",
         ],
     )?;
     Ok(ReceiveArgs {
@@ -431,6 +458,7 @@ fn parse_receive(args: Vec<String>) -> AnyResult<ReceiveArgs> {
         out: option(&args, "--out")?.into(),
         idle_timeout: parse_idle_timeout(&args)?,
         key_file: option(&args, "--key-file")?.into(),
+        reuse_from: optional_option(&args, "--reuse-from").map(Into::into),
     })
 }
 
@@ -444,6 +472,7 @@ fn parse_receive_dir(args: Vec<String>) -> AnyResult<ReceiveDirArgs> {
             "--out",
             "--key-file",
             "--idle-timeout-ms",
+            "--reuse-from",
         ],
     )?;
     Ok(ReceiveDirArgs {
@@ -453,6 +482,7 @@ fn parse_receive_dir(args: Vec<String>) -> AnyResult<ReceiveDirArgs> {
         out: option(&args, "--out")?.into(),
         idle_timeout: parse_idle_timeout(&args)?,
         key_file: option(&args, "--key-file")?.into(),
+        reuse_from: optional_option(&args, "--reuse-from").map(Into::into),
     })
 }
 
@@ -526,6 +556,7 @@ fn send_dir(args: SendDirArgs) -> AnyResult<()> {
             report_interval: args.report_interval,
             idle_timeout: args.idle_timeout,
             key_file: args.key_file.clone(),
+            reuse_chunks: args.reuse_chunks,
         })?;
         files = files.saturating_add(1);
         bytes = bytes
@@ -599,6 +630,10 @@ fn receive_dir(args: ReceiveDirArgs) -> AnyResult<()> {
             continue;
         }
         let out = directory::file_destination(&manifest, &staging, index)?;
+        let reuse_from = match &args.reuse_from {
+            Some(root) => directory::candidate_file(&manifest, root, index)?,
+            None => None,
+        };
         receive_on(
             &ReceiveArgs {
                 listen: args.data_listen,
@@ -606,6 +641,7 @@ fn receive_dir(args: ReceiveDirArgs) -> AnyResult<()> {
                 out,
                 idle_timeout: args.idle_timeout,
                 key_file: args.key_file.clone(),
+                reuse_from,
             },
             &data_listener,
             &udp,
@@ -630,6 +666,11 @@ fn send(args: SendArgs) -> AnyResult<()> {
     let key = SecretKey::load(&args.key_file)?;
     let size = fs::metadata(&args.file)?.len();
     let expected_hash = hash_file(&args.file)?;
+    let reuse_manifest = if args.reuse_chunks {
+        Some(cdc::scan(&args.file)?)
+    } else {
+        None
+    };
     let offered_session = auth::random_session()?;
     let chunks = size.div_ceil(args.udp_payload_bytes as u64);
     if chunks > MAX_CHUNKS {
@@ -643,8 +684,12 @@ fn send(args: SendArgs) -> AnyResult<()> {
     control.set_nodelay(true)?;
     control.set_read_timeout(Some(args.idle_timeout))?;
     control.set_write_timeout(Some(args.idle_timeout))?;
+    let reuse_greeting = reuse_manifest.as_ref().map_or_else(
+        || "R0".to_owned(),
+        |manifest| format!("R1 {} {}", manifest.chunks.len(), auth::hex(&manifest.hash)),
+    );
     let hello = format!(
-        "{} {} {} {} {} {} {} {}",
+        "{} {} {} {} {} {} {} {} {}",
         args.transport.wire_name(),
         size,
         expected_hash,
@@ -654,7 +699,8 @@ fn send(args: SendArgs) -> AnyResult<()> {
         args.report_interval.as_millis(),
         (args.repair_cooldown / 2)
             .max(args.report_interval)
-            .as_millis()
+            .as_millis(),
+        reuse_greeting,
     );
     let session_auth = auth::client_handshake(&mut control, &key, &hello)?;
     let mut control_reader = ControlReader::new(
@@ -668,20 +714,29 @@ fn send(args: SendArgs) -> AnyResult<()> {
         Direction::ClientToServer,
     );
 
-    let (durable_chunks, already_complete, acceptance_telemetry) = read_acceptance(
+    if let Some(manifest) = &reuse_manifest {
+        for line in cdc::encode(manifest).lines() {
+            control_writer.send(line)?;
+        }
+        control_writer.send("CHUNKS_END")?;
+    }
+
+    let acceptance = read_acceptance(
         &mut control_reader,
         args.transport,
         chunks,
         args.udp_payload_bytes,
         args.report_interval,
     )?;
-    let resumed_chunks = durable_chunks
+    let resumed_chunks = acceptance
+        .durable_chunks
         .iter()
         .map(|word| word.count_ones() as u64)
         .sum::<u64>();
-    if already_complete {
+    if acceptance.already_complete {
         control_writer.send("COMPLETE_ACK")?;
-        let socket_drops = acceptance_telemetry
+        let socket_drops = acceptance
+            .telemetry
             .socket_drops
             .map_or_else(|| "null".to_owned(), |drops| drops.to_string());
         let rate_controller_json = if args.transport == Transport::Udp {
@@ -699,7 +754,7 @@ fn send(args: SendArgs) -> AnyResult<()> {
             "{{\"schema_version\":1,\"role\":\"sender\",\"transport\":\"{}\",\"bytes\":{},\
              \"udp_payload_bytes\":{},\"feedback_interval_ms\":{},\"elapsed_ms\":0.0,\
              \"goodput_mbps\":0.0,\"datagrams\":0,\"repairs\":0,\
-             \"udp_ip_bytes_offered\":0,\"resumed_chunks\":{},\
+             \"udp_ip_bytes_offered\":0,\"resumed_chunks\":{},\"reused_bytes\":{},\"reused_chunks\":{},\
              \"receiver_received_chunks\":{},\"receiver_frontier_chunks\":{},\
              \"receiver_accepted_datagrams\":{},\"receiver_valid_datagrams\":{},\
              \"receiver_duplicate_datagrams\":{},\"receiver_invalid_datagrams\":{},\
@@ -710,15 +765,17 @@ fn send(args: SendArgs) -> AnyResult<()> {
             args.udp_payload_bytes,
             args.report_interval.as_millis(),
             chunks,
-            acceptance_telemetry.received_chunks,
-            acceptance_telemetry.frontier_chunks,
-            acceptance_telemetry.accepted_datagrams,
-            acceptance_telemetry.valid_datagrams,
-            acceptance_telemetry.duplicate_datagrams,
-            acceptance_telemetry.invalid_datagrams,
-            acceptance_telemetry.repair_datagrams,
+            acceptance.reused_bytes,
+            acceptance.reused_chunks,
+            acceptance.telemetry.received_chunks,
+            acceptance.telemetry.frontier_chunks,
+            acceptance.telemetry.accepted_datagrams,
+            acceptance.telemetry.valid_datagrams,
+            acceptance.telemetry.duplicate_datagrams,
+            acceptance.telemetry.invalid_datagrams,
+            acceptance.telemetry.repair_datagrams,
             socket_drops,
-            acceptance_telemetry.reports,
+            acceptance.telemetry.reports,
             rate_controller_json,
         );
         return Ok(());
@@ -750,7 +807,7 @@ fn send(args: SendArgs) -> AnyResult<()> {
                     payload_bytes: args.udp_payload_bytes,
                     report_interval: args.report_interval,
                     idle_timeout: args.idle_timeout,
-                    durable_chunks,
+                    durable_chunks: acceptance.durable_chunks,
                 };
                 send_udp(&args.file, &config, &mut control_writer, control_reader)?
             }
@@ -769,7 +826,7 @@ fn send(args: SendArgs) -> AnyResult<()> {
         "{{\"schema_version\":1,\"role\":\"sender\",\"transport\":\"{}\",\"bytes\":{},\
          \"udp_payload_bytes\":{},\"feedback_interval_ms\":{},\"elapsed_ms\":{:.3},\
          \"goodput_mbps\":{:.3},\"datagrams\":{},\"repairs\":{},\
-         \"udp_ip_bytes_offered\":{},\"resumed_chunks\":{},\
+         \"udp_ip_bytes_offered\":{},\"resumed_chunks\":{},\"reused_bytes\":{},\"reused_chunks\":{},\
          \"receiver_received_chunks\":{},\"receiver_frontier_chunks\":{},\
          \"receiver_accepted_datagrams\":{},\"receiver_valid_datagrams\":{},\
          \"receiver_duplicate_datagrams\":{},\"receiver_invalid_datagrams\":{},\
@@ -785,6 +842,8 @@ fn send(args: SendArgs) -> AnyResult<()> {
         repairs,
         udp_ip_bytes_offered,
         resumed_chunks,
+        acceptance.reused_bytes,
+        acceptance.reused_chunks,
         receiver_telemetry.received_chunks,
         receiver_telemetry.frontier_chunks,
         receiver_telemetry.accepted_datagrams,
@@ -808,13 +867,21 @@ fn expect_completion(reader: &mut ControlReader, writer: &mut ControlWriter) -> 
     Ok(())
 }
 
+struct Acceptance {
+    durable_chunks: Vec<u64>,
+    already_complete: bool,
+    telemetry: ReceiverTelemetry,
+    reused_bytes: u64,
+    reused_chunks: u64,
+}
+
 fn read_acceptance(
     control: &mut ControlReader,
     transport: Transport,
     chunks: u64,
     payload_bytes: usize,
     report_interval: Duration,
-) -> AnyResult<(Vec<u64>, bool, ReceiverTelemetry)> {
+) -> AnyResult<Acceptance> {
     let mut line = control.recv()?;
     let mut telemetry = ReceiverTelemetry::default();
     if line.starts_with("M ") {
@@ -830,18 +897,40 @@ fn read_acceptance(
         line = control.recv()?;
     }
     if line == "COMPLETE" {
-        return Ok((Vec::new(), true, telemetry));
+        return Ok(Acceptance {
+            durable_chunks: Vec::new(),
+            already_complete: true,
+            telemetry,
+            reused_bytes: 0,
+            reused_chunks: 0,
+        });
     }
     let expected_ready = format!("READY {payload_bytes} {}", report_interval.as_millis());
     if line != expected_ready {
         return Err(format!("receiver rejected transfer: {line}").into());
     }
     if transport != Transport::Udp {
-        return Ok((Vec::new(), false, telemetry));
+        return Ok(Acceptance {
+            durable_chunks: Vec::new(),
+            already_complete: false,
+            telemetry,
+            reused_bytes: 0,
+            reused_chunks: 0,
+        });
     }
 
     let words = usize::try_from(chunks.div_ceil(64))?;
     let mut bitmap = vec![0_u64; words];
+    line = control.recv()?;
+    let reuse_fields: Vec<_> = line.split(' ').collect();
+    if reuse_fields.len() != 3 || reuse_fields[0] != "REUSED" {
+        return Err("receiver omitted authenticated reuse inventory".into());
+    }
+    let reused_bytes = parse_canonical_u64(reuse_fields[1])?;
+    let reused_chunks = parse_canonical_u64(reuse_fields[2])?;
+    if reused_bytes > chunks.saturating_mul(payload_bytes as u64) || reused_chunks > chunks {
+        return Err("receiver reuse inventory exceeds the object".into());
+    }
     loop {
         line = control.recv()?;
         let trimmed = line.as_str();
@@ -867,7 +956,21 @@ fn read_acceptance(
     {
         return Err("resume bitmap contains chunks beyond the file".into());
     }
-    Ok((bitmap, false, telemetry))
+    if bitmap
+        .iter()
+        .map(|word| word.count_ones() as u64)
+        .sum::<u64>()
+        < reused_chunks
+    {
+        return Err("receiver reuse inventory exceeds durable chunks".into());
+    }
+    Ok(Acceptance {
+        durable_chunks: bitmap,
+        already_complete: false,
+        telemetry,
+        reused_bytes,
+        reused_chunks,
+    })
 }
 
 fn send_tcp(path: &Path, control: &mut TcpStream) -> AnyResult<()> {
@@ -1628,11 +1731,12 @@ fn receive_on(args: &ReceiveArgs, listener: &TcpListener, udp: &UdpSocket) -> An
         session_auth.clone(),
         Direction::ServerToClient,
     );
-    let control_reader = ControlReader::new(
+    let mut control_reader = ControlReader::new(
         control.try_clone()?,
         session_auth.clone(),
         Direction::ClientToServer,
     );
+    let reuse_manifest = read_reuse_manifest(&mut control_reader, &hello)?;
 
     if let Some(parent) = args.out.parent() {
         fs::create_dir_all(parent)?;
@@ -1677,7 +1781,11 @@ fn receive_on(args: &ReceiveArgs, listener: &TcpListener, udp: &UdpSocket) -> An
             &mut control_writer,
             control_reader,
             udp,
-            &args.out,
+            (
+                &args.out,
+                args.reuse_from.as_deref(),
+                reuse_manifest.as_ref(),
+            ),
             &hello,
             &session_auth,
             args.idle_timeout,
@@ -1738,6 +1846,7 @@ struct Hello {
     payload_bytes: usize,
     report_interval: Duration,
     repair_grace: Duration,
+    reuse_manifest: Option<(usize, [u8; 32])>,
 }
 
 #[derive(Clone, Copy)]
@@ -1759,7 +1868,7 @@ impl Hello {
 
 fn parse_hello(line: &str) -> AnyResult<Hello> {
     let parts: Vec<_> = line.split_whitespace().collect();
-    if parts.len() != 8 {
+    if parts.len() < 9 {
         return Err("invalid authenticated TSU4 greeting body".into());
     }
     let transport = match parts[0] {
@@ -1767,6 +1876,17 @@ fn parse_hello(line: &str) -> AnyResult<Hello> {
         "TCP4" => Transport::Tcp4,
         "UDP" => Transport::Udp,
         _ => return Err("invalid transport in greeting".into()),
+    };
+    let reuse_manifest = match parts[8] {
+        "R0" if parts.len() == 9 => None,
+        "R1" if parts.len() == 11 => {
+            let count = usize::try_from(parse_canonical_u64(parts[9])?)?;
+            if count > cdc::MAX_CHUNKS {
+                return Err("content-defined chunk limit exceeded".into());
+            }
+            Some((count, auth::decode_array::<32>(parts[10])?))
+        }
+        _ => return Err("invalid content-reuse greeting".into()),
     };
     let hello = Hello {
         transport,
@@ -1777,6 +1897,7 @@ fn parse_hello(line: &str) -> AnyResult<Hello> {
         payload_bytes: usize::try_from(parse_canonical_u64(parts[5])?)?,
         report_interval: Duration::from_millis(parse_canonical_u64(parts[6])?),
         repair_grace: Duration::from_millis(parse_canonical_u64(parts[7])?),
+        reuse_manifest,
     };
     auth::decode_array::<32>(&hello.hash)?;
     if !(MIN_UDP_PAYLOAD_BYTES..=MAX_UDP_PAYLOAD_BYTES).contains(&hello.payload_bytes) {
@@ -1797,7 +1918,39 @@ fn parse_hello(line: &str) -> AnyResult<Hello> {
             "repair grace must cover at least one feedback interval and at most 60 seconds".into(),
         );
     }
+    if hello.reuse_manifest.is_some() && hello.transport != Transport::Udp {
+        return Err("content reuse is supported only by UDP".into());
+    }
     Ok(hello)
+}
+
+fn read_reuse_manifest(
+    control: &mut ControlReader,
+    hello: &Hello,
+) -> AnyResult<Option<cdc::Manifest>> {
+    let Some((expected_count, expected_hash)) = hello.reuse_manifest else {
+        return Ok(None);
+    };
+    let mut encoded = String::new();
+    for _ in 0..expected_count.saturating_add(2) {
+        let line = control.recv()?;
+        if encoded.len().saturating_add(line.len()).saturating_add(1) > cdc::MAX_ENCODED_BYTES {
+            return Err("content-defined manifest byte limit exceeded".into());
+        }
+        encoded.push_str(&line);
+        encoded.push('\n');
+    }
+    if control.recv()? != "CHUNKS_END" {
+        return Err("content-defined manifest did not terminate correctly".into());
+    }
+    let manifest = cdc::parse(&encoded)?;
+    if manifest.size != hello.size
+        || manifest.chunks.len() != expected_count
+        || manifest.hash != expected_hash
+    {
+        return Err("content-defined manifest differs from authenticated greeting".into());
+    }
+    Ok(Some(manifest))
 }
 
 fn receive_tcp(
@@ -1966,11 +2119,12 @@ fn receive_udp(
     control: &mut ControlWriter,
     mut control_reader: ControlReader,
     udp: UdpSocket,
-    destination: &Path,
+    paths: (&Path, Option<&Path>, Option<&cdc::Manifest>),
     hello: &Hello,
     session_auth: &SessionAuth,
     idle_timeout: Duration,
 ) -> AnyResult<ReceiverTelemetry> {
+    let (destination, reuse_from, reuse_manifest) = paths;
     if destination
         .metadata()
         .is_ok_and(|metadata| metadata.len() == hello.size)
@@ -1995,6 +2149,12 @@ fn receive_udp(
         hello.payload_bytes,
         &hello.hash,
     )?;
+    let (reused_bytes, reused_chunks) = match (reuse_manifest, reuse_from) {
+        (Some(manifest), Some(candidate)) => {
+            apply_reusable_content(&file, &mut state, manifest, candidate, hello.chunk_layout())?
+        }
+        _ => (0, 0),
+    };
     let mut telemetry = ReceiverTelemetry {
         received_chunks: state.received_count,
         ..ReceiverTelemetry::default()
@@ -2015,6 +2175,7 @@ fn receive_udp(
         hello.payload_bytes,
         hello.report_interval.as_millis()
     ))?;
+    control.send(&format!("REUSED {reused_bytes} {reused_chunks}"))?;
     for (index, word) in state.bitmap.iter().copied().enumerate() {
         if word != 0 {
             control.send(&format!("H {index} {word:016x}"))?;
@@ -2273,6 +2434,107 @@ fn receive_udp(
         .join()
         .map_err(|_| "control reader thread panicked")?;
     Ok(telemetry)
+}
+
+fn apply_reusable_content(
+    destination: &File,
+    state: &mut ResumeState,
+    target: &cdc::Manifest,
+    candidate_path: &Path,
+    layout: ChunkLayout,
+) -> AnyResult<(u64, u64)> {
+    let candidate = match cdc::scan(candidate_path) {
+        Ok(manifest) => manifest,
+        Err(_error) if candidate_path.try_exists().is_ok_and(|exists| !exists) => {
+            return Ok((0, 0));
+        }
+        Err(error) => return Err(error),
+    };
+    let source = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(candidate_path)?;
+    let mut available = HashMap::with_capacity(candidate.chunks.len());
+    for chunk in &candidate.chunks {
+        available
+            .entry((chunk.length, chunk.hash))
+            .or_insert(chunk.offset);
+    }
+
+    let mut copied = Vec::<(u64, u64)>::new();
+    let mut buffer = vec![0_u8; cdc::MAX_CHUNK_BYTES];
+    for chunk in &target.chunks {
+        let Some(source_offset) = available.get(&(chunk.length, chunk.hash)).copied() else {
+            continue;
+        };
+        let bytes = &mut buffer[..chunk.length as usize];
+        read_exact_at(&source, bytes, source_offset)?;
+        let actual: [u8; 32] = Sha256::digest(&*bytes).into();
+        if actual != chunk.hash {
+            continue;
+        }
+        write_all_at(destination, bytes, chunk.offset)?;
+        copied.push((chunk.offset, chunk.offset + u64::from(chunk.length)));
+    }
+    if copied.is_empty() {
+        return Ok((0, 0));
+    }
+
+    let mut merged = Vec::<(u64, u64)>::new();
+    for range in copied {
+        if let Some(last) = merged.last_mut()
+            && range.0 <= last.1
+        {
+            last.1 = last.1.max(range.1);
+        } else {
+            merged.push(range);
+        }
+    }
+    let mut range_index = 0_usize;
+    let mut reused_bytes = 0_u64;
+    let mut reused_chunks = 0_u64;
+    for sequence in 0..layout.chunks {
+        if bitmap_contains(&state.bitmap, sequence) {
+            continue;
+        }
+        let start = sequence
+            .checked_mul(layout.payload_bytes as u64)
+            .ok_or("reuse packet offset overflow")?;
+        let end = start
+            .checked_add(layout.payload_bytes as u64)
+            .ok_or("reuse packet offset overflow")?
+            .min(layout.size);
+        while range_index < merged.len() && merged[range_index].1 <= start {
+            range_index += 1;
+        }
+        if merged
+            .get(range_index)
+            .is_some_and(|range| range.0 <= start && range.1 >= end)
+        {
+            bitmap_insert(&mut state.bitmap, sequence);
+            state.received_count = state.received_count.saturating_add(1);
+            reused_chunks = reused_chunks.saturating_add(1);
+            reused_bytes = reused_bytes.saturating_add(end - start);
+        }
+    }
+    if reused_chunks > 0 {
+        state.checkpoint(destination)?;
+    }
+    Ok((reused_bytes, reused_chunks))
+}
+
+fn read_exact_at(file: &File, mut buffer: &mut [u8], mut offset: u64) -> AnyResult<()> {
+    while !buffer.is_empty() {
+        let count = file.read_at(buffer, offset)?;
+        if count == 0 {
+            return Err("reuse candidate changed while it was read".into());
+        }
+        offset = offset
+            .checked_add(count as u64)
+            .ok_or("reuse candidate offset overflow")?;
+        buffer = &mut buffer[count..];
+    }
+    Ok(())
 }
 
 fn highest_received(bitmap: &[u64]) -> Option<u64> {
@@ -2908,16 +3170,28 @@ mod tests {
     fn authenticated_hello_binds_udp_parameters() {
         let hash = "00".repeat(32);
         let session = "11".repeat(16);
-        let valid = format!("UDP 2000 {hash} {session} 4 512 20 125");
+        let valid = format!("UDP 2000 {hash} {session} 4 512 20 125 R0");
         let hello = parse_hello(&valid).unwrap();
         assert_eq!(hello.chunks, 4);
         assert_eq!(hello.payload_bytes, 512);
         assert_eq!(hello.report_interval, Duration::from_millis(20));
-        assert!(parse_hello(&format!("UDP 2000 {hash} {session} 4 0512 20 125")).is_err());
-        assert!(parse_hello(&format!("UDP 2000 {hash} {session} 3 512 20 125")).is_err());
-        assert!(parse_hello(&format!("UDP 2000 {hash} {session} 4 255 20 125")).is_err());
-        assert!(parse_hello(&format!("UDP 2000 {hash} {session} 4 512 9 125")).is_err());
-        assert!(parse_hello(&format!("UDP 2000 {hash} {session} 4 512 20 19")).is_err());
+        assert!(parse_hello(&format!("UDP 2000 {hash} {session} 4 0512 20 125 R0")).is_err());
+        assert!(parse_hello(&format!("UDP 2000 {hash} {session} 3 512 20 125 R0")).is_err());
+        assert!(parse_hello(&format!("UDP 2000 {hash} {session} 4 255 20 125 R0")).is_err());
+        assert!(parse_hello(&format!("UDP 2000 {hash} {session} 4 512 9 125 R0")).is_err());
+        assert!(parse_hello(&format!("UDP 2000 {hash} {session} 4 512 20 19 R0")).is_err());
+        assert!(
+            parse_hello(&format!(
+                "TCP 2000 {hash} {session} 4 512 20 125 R1 1 {hash}"
+            ))
+            .is_err()
+        );
+        assert!(
+            parse_hello(&format!(
+                "UDP 2000 {hash} {session} 4 512 20 125 R1 01 {hash}"
+            ))
+            .is_err()
+        );
     }
 
     #[test]
