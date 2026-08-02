@@ -14,6 +14,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 mod auth;
+mod cdc;
 mod directory;
 mod resume;
 
@@ -166,6 +167,11 @@ fn run() -> AnyResult<()> {
             validate_options(&args, &["--root"])?;
             directory::print(Path::new(&option(&args, "--root")?))
         }
+        Some("chunks") => {
+            let args: Vec<_> = args.collect();
+            validate_options(&args, &["--file"])?;
+            cdc::print(Path::new(&option(&args, "--file")?))
+        }
         Some("--help" | "-h" | "help") => {
             usage();
             Ok(())
@@ -177,7 +183,7 @@ fn run() -> AnyResult<()> {
         _ => {
             usage();
             Err(
-                "expected send, receive, send-dir, receive-dir, manifest, or keygen subcommand"
+                "expected send, receive, send-dir, receive-dir, manifest, chunks, or keygen subcommand"
                     .into(),
             )
         }
@@ -201,6 +207,7 @@ fn usage() {
          [--repair-cooldown-ms N] [--udp-payload-bytes N] \
          [--feedback-interval-ms N] [--idle-timeout-ms N]\n  \
          packet-tide manifest --root PATH\n  \
+         packet-tide chunks --file PATH\n  \
          packet-tide keygen --out PATH"
     );
 }
