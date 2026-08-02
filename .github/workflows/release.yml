@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing vMAJOR.MINOR.PATCH tag to publish
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -11,6 +17,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: 1.88.0
+  RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
 
 jobs:
   validate:
@@ -20,6 +27,8 @@ jobs:
     steps:
       - name: Check out tagged source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Install minimum Rust toolchain
         run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt,clippy
@@ -39,7 +48,7 @@ jobs:
           python3 -m py_compile lab/two-host/run-matrix.py lab/two-host/evaluate-release.py
 
       - name: Validate tag, source package, and installation
-        run: RUSTUP_TOOLCHAIN="$RUST_TOOLCHAIN" release/check-release.sh "$GITHUB_REF_NAME"
+        run: RUSTUP_TOOLCHAIN="$RUST_TOOLCHAIN" release/check-release.sh "$RELEASE_TAG"
 
       - name: Retain clean source package
         uses: actions/upload-artifact@v4
@@ -65,6 +74,8 @@ jobs:
     steps:
       - name: Check out tagged source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Install musl build tools
         run: sudo apt-get update && sudo apt-get install --yes musl-tools
@@ -82,7 +93,7 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          version=${GITHUB_REF_NAME#v}
+          version=${RELEASE_TAG#v}
           binary="target/$TARGET/release/tsunami-udp"
           test "$("$binary" --version)" = "tsunami-udp $version"
           file "$binary" | grep -Eq 'static(-pie|ally) linked'
@@ -90,7 +101,7 @@ jobs:
           mkdir -p "dist/$directory"
           install -m 0755 "$binary" "dist/$directory/tsunami-udp"
           install -m 0644 README.md LICENSE "dist/$directory/"
-          source_date_epoch=$(git show -s --format=%ct "$GITHUB_SHA")
+          source_date_epoch=$(git show -s --format=%ct HEAD)
           tar --sort=name --mtime="@$source_date_epoch" --owner=0 --group=0 --numeric-owner \
             -C dist -cf - "$directory" | gzip -9n >"dist/$directory.tar.gz"
 
@@ -112,6 +123,8 @@ jobs:
     steps:
       - name: Check out tagged source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Download validated artifacts
         uses: actions/download-artifact@v4
@@ -130,4 +143,4 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/*.crate dist/*.tar.gz dist/SHA256SUMS --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+        run: gh release create "$RELEASE_TAG" dist/*.crate dist/*.tar.gz dist/SHA256SUMS --verify-tag --generate-notes --title "$RELEASE_TAG"
