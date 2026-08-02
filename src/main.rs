@@ -5,6 +5,7 @@ use std::error::Error;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,6 +27,7 @@ const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const MIN_IDLE_TIMEOUT: Duration = Duration::from_millis(500);
 const MAX_IDLE_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const MAX_RANGES_PER_REPORT: usize = 512;
+const MAX_FEEDBACK_REPORT_SIZE: usize = 24 * 1024;
 const TCP4_LANES: usize = 4;
 const RESUME_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_QUEUED_REPAIRS: usize = 65_536;
@@ -33,6 +35,19 @@ const MAX_BITMAP_BYTES: usize = 64 * 1024 * 1024;
 const MAX_CHUNKS: u64 = (MAX_BITMAP_BYTES as u64) * 8;
 
 type AnyResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct ReceiverTelemetry {
+    received_chunks: u64,
+    frontier_chunks: u64,
+    accepted_datagrams: u64,
+    valid_datagrams: u64,
+    duplicate_datagrams: u64,
+    invalid_datagrams: u64,
+    repair_datagrams: u64,
+    socket_drops: Option<u64>,
+    reports: u64,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Transport {
@@ -280,7 +295,7 @@ fn send(args: SendArgs) -> AnyResult<()> {
         Direction::ClientToServer,
     );
 
-    let (durable_chunks, already_complete) =
+    let (durable_chunks, already_complete, acceptance_telemetry) =
         read_acceptance(&mut control_reader, args.transport, chunks)?;
     let resumed_chunks = durable_chunks
         .iter()
@@ -288,28 +303,45 @@ fn send(args: SendArgs) -> AnyResult<()> {
         .sum::<u64>();
     if already_complete {
         control_writer.send("COMPLETE_ACK")?;
+        let socket_drops = acceptance_telemetry
+            .socket_drops
+            .map_or_else(|| "null".to_owned(), |drops| drops.to_string());
         println!(
-            "{{\"transport\":\"{}\",\"bytes\":{},\"elapsed_ms\":0.0,\
+            "{{\"schema_version\":1,\"role\":\"sender\",\"transport\":\"{}\",\"bytes\":{},\"elapsed_ms\":0.0,\
              \"goodput_mbps\":0.0,\"datagrams\":0,\"repairs\":0,\
-             \"udp_ip_bytes_offered\":0,\"resumed_chunks\":{}}}",
+             \"udp_ip_bytes_offered\":0,\"resumed_chunks\":{},\
+             \"receiver_received_chunks\":{},\"receiver_frontier_chunks\":{},\
+             \"receiver_accepted_datagrams\":{},\"receiver_valid_datagrams\":{},\
+             \"receiver_duplicate_datagrams\":{},\"receiver_invalid_datagrams\":{},\
+             \"receiver_repair_datagrams\":{},\"receiver_socket_drops\":{},\
+             \"receiver_reports\":{}}}",
             args.transport.display_name(),
             size,
-            chunks
+            chunks,
+            acceptance_telemetry.received_chunks,
+            acceptance_telemetry.frontier_chunks,
+            acceptance_telemetry.accepted_datagrams,
+            acceptance_telemetry.valid_datagrams,
+            acceptance_telemetry.duplicate_datagrams,
+            acceptance_telemetry.invalid_datagrams,
+            acceptance_telemetry.repair_datagrams,
+            socket_drops,
+            acceptance_telemetry.reports
         );
         return Ok(());
     }
 
     let started = Instant::now();
-    let (datagrams, repairs, udp_ip_bytes_offered) = match args.transport {
+    let (datagrams, repairs, udp_ip_bytes_offered, receiver_telemetry) = match args.transport {
         Transport::Tcp => {
             send_tcp(&args.file, &mut control)?;
             expect_completion(&mut control_reader, &mut control_writer)?;
-            (0, 0, 0)
+            (0, 0, 0, ReceiverTelemetry::default())
         }
         Transport::Tcp4 => {
             send_tcp4(&args.file, args.connect, &session_auth, args.idle_timeout)?;
             expect_completion(&mut control_reader, &mut control_writer)?;
-            (0, 0, 0)
+            (0, 0, 0, ReceiverTelemetry::default())
         }
         Transport::Udp => {
             let config = UdpSendConfig {
@@ -332,10 +364,18 @@ fn send(args: SendArgs) -> AnyResult<()> {
     } else {
         size as f64 * 8.0 / elapsed.as_secs_f64() / 1_000_000.0
     };
+    let receiver_socket_drops = receiver_telemetry
+        .socket_drops
+        .map_or_else(|| "null".to_owned(), |drops| drops.to_string());
     println!(
-        "{{\"transport\":\"{}\",\"bytes\":{},\"elapsed_ms\":{:.3},\
+        "{{\"schema_version\":1,\"role\":\"sender\",\"transport\":\"{}\",\"bytes\":{},\"elapsed_ms\":{:.3},\
          \"goodput_mbps\":{:.3},\"datagrams\":{},\"repairs\":{},\
-         \"udp_ip_bytes_offered\":{},\"resumed_chunks\":{}}}",
+         \"udp_ip_bytes_offered\":{},\"resumed_chunks\":{},\
+         \"receiver_received_chunks\":{},\"receiver_frontier_chunks\":{},\
+         \"receiver_accepted_datagrams\":{},\"receiver_valid_datagrams\":{},\
+         \"receiver_duplicate_datagrams\":{},\"receiver_invalid_datagrams\":{},\
+         \"receiver_repair_datagrams\":{},\"receiver_socket_drops\":{},\
+         \"receiver_reports\":{}}}",
         args.transport.display_name(),
         size,
         elapsed.as_secs_f64() * 1000.0,
@@ -343,7 +383,16 @@ fn send(args: SendArgs) -> AnyResult<()> {
         datagrams,
         repairs,
         udp_ip_bytes_offered,
-        resumed_chunks
+        resumed_chunks,
+        receiver_telemetry.received_chunks,
+        receiver_telemetry.frontier_chunks,
+        receiver_telemetry.accepted_datagrams,
+        receiver_telemetry.valid_datagrams,
+        receiver_telemetry.duplicate_datagrams,
+        receiver_telemetry.invalid_datagrams,
+        receiver_telemetry.repair_datagrams,
+        receiver_socket_drops,
+        receiver_telemetry.reports
     );
     Ok(())
 }
@@ -361,16 +410,29 @@ fn read_acceptance(
     control: &mut ControlReader,
     transport: Transport,
     chunks: u64,
-) -> AnyResult<(Vec<u64>, bool)> {
+) -> AnyResult<(Vec<u64>, bool, ReceiverTelemetry)> {
     let mut line = control.recv()?;
+    let mut telemetry = ReceiverTelemetry::default();
+    if line.starts_with("M ") {
+        if transport != Transport::Udp {
+            return Err("non-UDP receiver sent datagram telemetry".into());
+        }
+        let (mut snapshot, ranges) = parse_feedback_report(&line, chunks)?;
+        if !ranges.is_empty() {
+            return Err("completed receiver reported missing chunks".into());
+        }
+        snapshot.reports = 1;
+        telemetry = snapshot;
+        line = control.recv()?;
+    }
     if line == "COMPLETE" {
-        return Ok((Vec::new(), true));
+        return Ok((Vec::new(), true, telemetry));
     }
     if line != "READY" {
         return Err(format!("receiver rejected transfer: {line}").into());
     }
     if transport != Transport::Udp {
-        return Ok((Vec::new(), false));
+        return Ok((Vec::new(), false, telemetry));
     }
 
     let words = usize::try_from(chunks.div_ceil(64))?;
@@ -400,7 +462,7 @@ fn read_acceptance(
     {
         return Err("resume bitmap contains chunks beyond the file".into());
     }
-    Ok((bitmap, false))
+    Ok((bitmap, false, telemetry))
 }
 
 fn send_tcp(path: &Path, control: &mut TcpStream) -> AnyResult<()> {
@@ -497,7 +559,7 @@ fn send_udp(
     config: &UdpSendConfig,
     control: &mut ControlWriter,
     control_reader: ControlReader,
-) -> AnyResult<(u64, u64, u64)> {
+) -> AnyResult<(u64, u64, u64, ReceiverTelemetry)> {
     let result = send_udp_inner(path, config, control, control_reader);
     if result.is_err() {
         let _ = control.send("CANCEL sender-error");
@@ -510,7 +572,7 @@ fn send_udp_inner(
     config: &UdpSendConfig,
     control: &mut ControlWriter,
     control_reader: ControlReader,
-) -> AnyResult<(u64, u64, u64)> {
+) -> AnyResult<(u64, u64, u64, ReceiverTelemetry)> {
     if !config.rate_mbps.is_finite() || config.rate_mbps <= 0.0 {
         return Err("--rate-mbps must be positive and finite".into());
     }
@@ -525,16 +587,19 @@ fn send_udp_inner(
     let pending = Arc::new(Mutex::new(RepairQueue::new(config.repair_cooldown)));
     let complete = Arc::new(AtomicBool::new(false));
     let feedback_error = Arc::new(Mutex::new(None::<String>));
+    let receiver_telemetry = Arc::new(Mutex::new(ReceiverTelemetry::default()));
 
     let pending_for_reader = Arc::clone(&pending);
     let complete_for_reader = Arc::clone(&complete);
     let error_for_reader = Arc::clone(&feedback_error);
+    let telemetry_for_reader = Arc::clone(&receiver_telemetry);
     let chunks_for_reader = config.chunks;
     let feedback_thread = thread::spawn(move || {
         if let Err(error) = read_feedback(
             control_reader,
             pending_for_reader,
             complete_for_reader,
+            telemetry_for_reader,
             chunks_for_reader,
         ) {
             *error_for_reader
@@ -609,7 +674,11 @@ fn send_udp_inner(
         .join()
         .map_err(|_| "feedback thread panicked")?;
     control.send("COMPLETE_ACK")?;
-    Ok((datagrams, repairs, udp_ip_bytes_offered))
+    let receiver_telemetry = receiver_telemetry
+        .lock()
+        .expect("receiver telemetry mutex poisoned")
+        .clone();
+    Ok((datagrams, repairs, udp_ip_bytes_offered, receiver_telemetry))
 }
 
 fn check_feedback_error(feedback_error: &Mutex<Option<String>>) -> AnyResult<()> {
@@ -657,6 +726,7 @@ fn read_feedback(
     mut reader: ControlReader,
     pending: Arc<Mutex<RepairQueue>>,
     complete: Arc<AtomicBool>,
+    telemetry: Arc<Mutex<ReceiverTelemetry>>,
     chunks: u64,
 ) -> AnyResult<()> {
     loop {
@@ -667,14 +737,19 @@ fn read_feedback(
             complete.store(true, Ordering::Release);
             return Ok(());
         }
-        if let Some(ranges) = line.strip_prefix("M ") {
+        if line.starts_with("M ") {
+            let (mut snapshot, ranges) = parse_feedback_report(&line, chunks)?;
+            let mut current = telemetry.lock().expect("receiver telemetry mutex poisoned");
+            snapshot.reports = current.reports.saturating_add(1);
+            *current = snapshot;
+            drop(current);
             let mut queue = pending.lock().expect("repair queue mutex poisoned");
             let now = Instant::now();
             let cooldown = queue.cooldown;
             queue
                 .last_sent
                 .retain(|_, sent_at| now.duration_since(*sent_at) < cooldown);
-            enqueue_repairs(&mut queue, ranges, chunks)?;
+            enqueue_repairs(&mut queue, &ranges, chunks)?;
         } else if let Some(message) = line.strip_prefix("CANCEL ") {
             return Err(format!("receiver cancelled transfer: {message}").into());
         } else if let Some(message) = line.strip_prefix("ERROR ") {
@@ -685,6 +760,58 @@ fn read_feedback(
             return Err(format!("unexpected receiver feedback: {line}").into());
         }
     }
+}
+
+fn parse_feedback_report(line: &str, chunks: u64) -> AnyResult<(ReceiverTelemetry, String)> {
+    let fields: Vec<_> = line.split_whitespace().collect();
+    if fields.len() != 10 || fields[0] != "M" {
+        return Err("invalid receiver feedback report".into());
+    }
+    let socket_drops = if fields[8] == "-" {
+        None
+    } else {
+        Some(parse_canonical_u64(fields[8])?)
+    };
+    let telemetry = ReceiverTelemetry {
+        received_chunks: parse_canonical_u64(fields[1])?,
+        frontier_chunks: parse_canonical_u64(fields[2])?,
+        accepted_datagrams: parse_canonical_u64(fields[3])?,
+        valid_datagrams: parse_canonical_u64(fields[4])?,
+        duplicate_datagrams: parse_canonical_u64(fields[5])?,
+        invalid_datagrams: parse_canonical_u64(fields[6])?,
+        repair_datagrams: parse_canonical_u64(fields[7])?,
+        socket_drops,
+        reports: 0,
+    };
+    if telemetry.received_chunks > chunks
+        || telemetry.frontier_chunks > chunks
+        || telemetry.accepted_datagrams > telemetry.received_chunks
+        || telemetry.accepted_datagrams > telemetry.valid_datagrams
+        || telemetry.duplicate_datagrams > telemetry.valid_datagrams
+        || telemetry.repair_datagrams > telemetry.valid_datagrams
+        || telemetry
+            .accepted_datagrams
+            .checked_add(telemetry.duplicate_datagrams)
+            != Some(telemetry.valid_datagrams)
+    {
+        return Err("inconsistent receiver feedback counters".into());
+    }
+    let ranges = if fields[9] == "-" {
+        String::new()
+    } else {
+        fields[9].to_owned()
+    };
+    Ok((telemetry, ranges))
+}
+
+fn parse_canonical_u64(value: &str) -> AnyResult<u64> {
+    if value.is_empty()
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+        || (value.len() > 1 && value.starts_with('0'))
+    {
+        return Err(format!("non-canonical unsigned integer {value:?}").into());
+    }
+    Ok(value.parse()?)
 }
 
 fn enqueue_repairs(queue: &mut RepairQueue, ranges: &str, chunks: u64) -> AnyResult<()> {
@@ -843,7 +970,8 @@ fn receive(args: ReceiveArgs) -> AnyResult<()> {
         fs::create_dir_all(parent)?;
     }
     let temporary = temporary_path(&args.out);
-    let result = match hello.transport {
+    let started = Instant::now();
+    let result: AnyResult<Option<ReceiverTelemetry>> = match hello.transport {
         Transport::Tcp => {
             control_writer.send("READY")?;
             receive_tcp(
@@ -854,6 +982,7 @@ fn receive(args: ReceiveArgs) -> AnyResult<()> {
                 &args.out,
                 &hello,
             )
+            .map(|()| None)
         }
         Transport::Tcp4 => {
             control_writer.send("READY")?;
@@ -866,6 +995,7 @@ fn receive(args: ReceiveArgs) -> AnyResult<()> {
                 &session_auth,
                 args.idle_timeout,
             )
+            .map(|()| None)
         }
         Transport::Udp => receive_udp(
             &mut control_writer,
@@ -875,7 +1005,8 @@ fn receive(args: ReceiveArgs) -> AnyResult<()> {
             &hello,
             &session_auth,
             args.idle_timeout,
-        ),
+        )
+        .map(Some),
     };
     if let Err(error) = &result {
         if hello.transport != Transport::Udp {
@@ -883,7 +1014,40 @@ fn receive(args: ReceiveArgs) -> AnyResult<()> {
         }
         eprintln!("receive from {peer} failed: {error}");
     }
-    result
+    if let Ok(telemetry) = &result {
+        let telemetry = telemetry.clone().unwrap_or_default();
+        let elapsed = started.elapsed();
+        let goodput_mbps = if elapsed.is_zero() {
+            0.0
+        } else {
+            hello.size as f64 * 8.0 / elapsed.as_secs_f64() / 1_000_000.0
+        };
+        let socket_drops = telemetry
+            .socket_drops
+            .map_or_else(|| "null".to_owned(), |drops| drops.to_string());
+        println!(
+            "{{\"schema_version\":1,\"role\":\"receiver\",\"transport\":\"{}\",\
+             \"bytes\":{},\"elapsed_ms\":{:.3},\"goodput_mbps\":{:.3},\
+             \"received_chunks\":{},\"frontier_chunks\":{},\
+             \"accepted_datagrams\":{},\"valid_datagrams\":{},\
+             \"duplicate_datagrams\":{},\"invalid_datagrams\":{},\
+             \"repair_datagrams\":{},\"socket_drops\":{},\"reports\":{}}}",
+            hello.transport.display_name(),
+            hello.size,
+            elapsed.as_secs_f64() * 1000.0,
+            goodput_mbps,
+            telemetry.received_chunks,
+            telemetry.frontier_chunks,
+            telemetry.accepted_datagrams,
+            telemetry.valid_datagrams,
+            telemetry.duplicate_datagrams,
+            telemetry.invalid_datagrams,
+            telemetry.repair_datagrams,
+            socket_drops,
+            telemetry.reports
+        );
+    }
+    result.map(|_| ())
 }
 
 struct Hello {
@@ -1098,17 +1262,29 @@ fn receive_udp(
     hello: &Hello,
     session_auth: &SessionAuth,
     idle_timeout: Duration,
-) -> AnyResult<()> {
+) -> AnyResult<ReceiverTelemetry> {
     if destination
         .metadata()
         .is_ok_and(|metadata| metadata.len() == hello.size)
         && hash_file(destination)? == hello.hash
     {
+        let telemetry = ReceiverTelemetry {
+            received_chunks: hello.chunks,
+            frontier_chunks: hello.chunks,
+            socket_drops: udp_socket_drops(&udp),
+            reports: 1,
+            ..ReceiverTelemetry::default()
+        };
+        control.send(&format_feedback_report(&telemetry, &[]))?;
         send_completion_and_wait(control, &mut control_reader)?;
-        return Ok(());
+        return Ok(telemetry);
     }
 
     let (file, mut state) = ResumeState::open(destination, hello.size, hello.chunks, &hello.hash)?;
+    let mut telemetry = ReceiverTelemetry {
+        received_chunks: state.received_count,
+        ..ReceiverTelemetry::default()
+    };
     let mut object_hasher = Sha256::new();
     let mut hash_frontier = 0_u64;
     let mut hash_buffer = vec![0_u8; 1024 * 1024];
@@ -1176,25 +1352,31 @@ fn receive_udp(
     let mut packet = vec![0_u8; 65_535];
     loop {
         match udp.recv(&mut packet) {
-            Ok(count) => {
+            Ok(count) => 'packet: {
                 if count < HEADER_SIZE {
-                    continue;
+                    telemetry.invalid_datagrams = telemetry.invalid_datagrams.saturating_add(1);
+                    break 'packet;
                 }
                 if packet[0] != 3 {
-                    continue;
+                    telemetry.invalid_datagrams = telemetry.invalid_datagrams.saturating_add(1);
+                    break 'packet;
                 }
                 let sequence = u64::from_be_bytes(packet[1..9].try_into()?);
                 let repair = match packet[9] {
                     0 => false,
                     1 => true,
-                    _ => continue,
+                    _ => {
+                        telemetry.invalid_datagrams = telemetry.invalid_datagrams.saturating_add(1);
+                        break 'packet;
+                    }
                 };
                 let payload_len = u16::from_be_bytes(packet[10..12].try_into()?) as usize;
                 if sequence >= hello.chunks
                     || payload_len > PAYLOAD_SIZE
                     || count != HEADER_SIZE + payload_len
                 {
-                    continue;
+                    telemetry.invalid_datagrams = telemetry.invalid_datagrams.saturating_add(1);
+                    break 'packet;
                 }
                 if !auth::verify_udp_tag_parts(
                     &session_auth.udp,
@@ -1202,15 +1384,22 @@ fn receive_udp(
                     &packet[HEADER_SIZE..count],
                     &packet[12..28],
                 ) {
-                    continue;
+                    telemetry.invalid_datagrams = telemetry.invalid_datagrams.saturating_add(1);
+                    break 'packet;
                 }
                 let offset = sequence * PAYLOAD_SIZE as u64;
                 let expected_len =
                     (hello.size.saturating_sub(offset)).min(PAYLOAD_SIZE as u64) as usize;
                 if payload_len != expected_len {
-                    continue;
+                    telemetry.invalid_datagrams = telemetry.invalid_datagrams.saturating_add(1);
+                    break 'packet;
+                }
+                telemetry.valid_datagrams = telemetry.valid_datagrams.saturating_add(1);
+                if repair {
+                    telemetry.repair_datagrams = telemetry.repair_datagrams.saturating_add(1);
                 }
                 if !bitmap_contains(&state.bitmap, sequence) {
+                    telemetry.accepted_datagrams = telemetry.accepted_datagrams.saturating_add(1);
                     if !repair && highest.is_some_and(|frontier| sequence < frontier) {
                         reordering_observed = true;
                     }
@@ -1233,6 +1422,8 @@ fn receive_udp(
                             &mut hash_buffer,
                         )?;
                     }
+                } else {
+                    telemetry.duplicate_datagrams = telemetry.duplicate_datagrams.saturating_add(1);
                 }
                 highest = Some(highest.map_or(sequence, |old| old.max(sequence)));
             }
@@ -1295,6 +1486,9 @@ fn receive_udp(
                 return Err("received UDP file hash did not match".into());
             }
             state.install(destination)?;
+            update_receiver_telemetry(&mut telemetry, &state, highest, &udp);
+            telemetry.reports = telemetry.reports.saturating_add(1);
+            control.send(&format_feedback_report(&telemetry, &[]))?;
             control.send("COMPLETE")?;
             let acknowledgement_deadline = Instant::now() + idle_timeout;
             loop {
@@ -1351,18 +1545,9 @@ fn receive_udp(
                 mature_end
             };
             let ranges = missing_ranges(&state.bitmap, report_end, MAX_RANGES_PER_REPORT);
-            let mut report = String::from("M ");
-            for (index, (start, end)) in ranges.iter().enumerate() {
-                if index > 0 {
-                    report.push(',');
-                }
-                if start == end {
-                    report.push_str(&start.to_string());
-                } else {
-                    report.push_str(&format!("{start}-{end}"));
-                }
-            }
-            control.send(&report)?;
+            update_receiver_telemetry(&mut telemetry, &state, highest, &udp);
+            telemetry.reports = telemetry.reports.saturating_add(1);
+            control.send(&format_feedback_report(&telemetry, &ranges))?;
             last_report = Instant::now();
         }
     }
@@ -1370,7 +1555,7 @@ fn receive_udp(
     control_thread
         .join()
         .map_err(|_| "control reader thread panicked")?;
-    Ok(())
+    Ok(telemetry)
 }
 
 fn highest_received(bitmap: &[u64]) -> Option<u64> {
@@ -1464,6 +1649,69 @@ fn bitmap_insert(bitmap: &mut [u64], sequence: u64) {
     bitmap[word] |= 1_u64 << bit;
 }
 
+fn update_receiver_telemetry(
+    telemetry: &mut ReceiverTelemetry,
+    state: &ResumeState,
+    highest: Option<u64>,
+    udp: &UdpSocket,
+) {
+    telemetry.received_chunks = state.received_count;
+    telemetry.frontier_chunks = highest.map_or(0, |sequence| sequence + 1);
+    telemetry.socket_drops = udp_socket_drops(udp);
+}
+
+fn format_feedback_report(telemetry: &ReceiverTelemetry, ranges: &[(u64, u64)]) -> String {
+    let socket_drops = telemetry
+        .socket_drops
+        .map_or_else(|| "-".to_owned(), |drops| drops.to_string());
+    let mut encoded_ranges = String::new();
+    for (index, (start, end)) in ranges.iter().enumerate() {
+        if index > 0 {
+            encoded_ranges.push(',');
+        }
+        if start == end {
+            encoded_ranges.push_str(&start.to_string());
+        } else {
+            encoded_ranges.push_str(&format!("{start}-{end}"));
+        }
+    }
+    if encoded_ranges.is_empty() {
+        encoded_ranges.push('-');
+    }
+    let report = format!(
+        "M {} {} {} {} {} {} {} {} {}",
+        telemetry.received_chunks,
+        telemetry.frontier_chunks,
+        telemetry.accepted_datagrams,
+        telemetry.valid_datagrams,
+        telemetry.duplicate_datagrams,
+        telemetry.invalid_datagrams,
+        telemetry.repair_datagrams,
+        socket_drops,
+        encoded_ranges
+    );
+    debug_assert!(report.len() <= MAX_FEEDBACK_REPORT_SIZE);
+    report
+}
+
+fn udp_socket_drops(socket: &UdpSocket) -> Option<u64> {
+    let link = fs::read_link(format!("/proc/self/fd/{}", socket.as_raw_fd())).ok()?;
+    let link = link.to_str()?;
+    let inode = link.strip_prefix("socket:[")?.strip_suffix(']')?;
+    for table in ["/proc/net/udp", "/proc/net/udp6"] {
+        let Ok(contents) = fs::read_to_string(table) else {
+            continue;
+        };
+        for line in contents.lines().skip(1) {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            if fields.get(9) == Some(&inode) {
+                return fields.last()?.parse().ok();
+            }
+        }
+    }
+    None
+}
+
 fn missing_ranges(bitmap: &[u64], end: u64, max_ranges: usize) -> Vec<(u64, u64)> {
     let mut ranges = Vec::new();
     let mut sequence = 0_u64;
@@ -1551,6 +1799,46 @@ mod tests {
         assert_eq!(parse_range("7").unwrap(), (7, 7));
         assert_eq!(parse_range("7-11").unwrap(), (7, 11));
         assert!(parse_range("11-7").is_err());
+    }
+
+    #[test]
+    fn telemetry_reports_round_trip_and_reject_inconsistent_counters() {
+        let telemetry = ReceiverTelemetry {
+            received_chunks: 8,
+            frontier_chunks: 10,
+            accepted_datagrams: 7,
+            valid_datagrams: 9,
+            duplicate_datagrams: 2,
+            invalid_datagrams: 3,
+            repair_datagrams: 4,
+            socket_drops: Some(5),
+            reports: 0,
+        };
+        let line = format_feedback_report(&telemetry, &[(1, 2), (9, 9)]);
+        assert_eq!(line, "M 8 10 7 9 2 3 4 5 1-2,9");
+        let (decoded, ranges) = parse_feedback_report(&line, 10).unwrap();
+        assert_eq!(decoded, telemetry);
+        assert_eq!(ranges, "1-2,9");
+
+        assert!(parse_feedback_report("M 8 10 7 8 2 3 4 5 -", 10).is_err());
+        assert!(parse_feedback_report("M 08 10 7 9 2 3 4 5 -", 10).is_err());
+        assert!(parse_feedback_report("M 8 11 7 9 2 3 4 5 -", 10).is_err());
+    }
+
+    #[test]
+    fn empty_telemetry_report_uses_explicit_sentinels() {
+        let line = format_feedback_report(&ReceiverTelemetry::default(), &[]);
+        assert_eq!(line, "M 0 0 0 0 0 0 0 - -");
+        let (decoded, ranges) = parse_feedback_report(&line, 0).unwrap();
+        assert_eq!(decoded, ReceiverTelemetry::default());
+        assert!(ranges.is_empty());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_udp_drop_counter_is_discoverable() {
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        assert!(udp_socket_drops(&socket).is_some());
     }
 
     #[test]

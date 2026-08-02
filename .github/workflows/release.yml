@@ -46,6 +46,8 @@ jobs:
         run: |
           bash -n release/check-release.sh
           bash -n lab/test-liveness.sh
+          bash -n lab/test-telemetry.sh
+          python3 -m py_compile lab/udp-fault-proxy.py
           python3 -m py_compile lab/two-host/run-matrix.py lab/two-host/evaluate-release.py
 
       - name: Validate tag, source package, and installation

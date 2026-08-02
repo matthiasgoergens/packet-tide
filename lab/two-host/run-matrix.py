@@ -323,6 +323,49 @@ nice -n 10 ionice -c2 -n7 {runtime} run --name {quote(sender_name)} --cap-add NE
             f"{treatment} failed (sender={sent.returncode}, receiver={receiver_status!r}):\n{sent.stderr}\n{logs}"
         )
     sender_json = json.loads(sent.stdout.strip().splitlines()[-1])
+    receiver_summaries = []
+    for line in logs.splitlines():
+        try:
+            candidate = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if (
+            isinstance(candidate, dict)
+            and candidate.get("schema_version") == 1
+            and candidate.get("role") == "receiver"
+        ):
+            receiver_summaries.append(candidate)
+    receiver_summary = receiver_summaries[-1] if receiver_summaries else None
+    if sender_json.get("schema_version") == 1 and receiver_summary is None:
+        raise RuntimeError(f"{treatment} receiver did not emit a schema-versioned summary:\n{logs}")
+    if treatment == "udp" and sender_json.get("schema_version") == 1:
+        expected_chunks = (scenario["file_bytes"] + 1171) // 1172
+        expected = {
+            "received_chunks": sender_json.get("receiver_received_chunks"),
+            "frontier_chunks": sender_json.get("receiver_frontier_chunks"),
+            "accepted_datagrams": sender_json.get("receiver_accepted_datagrams"),
+            "valid_datagrams": sender_json.get("receiver_valid_datagrams"),
+            "duplicate_datagrams": sender_json.get("receiver_duplicate_datagrams"),
+            "invalid_datagrams": sender_json.get("receiver_invalid_datagrams"),
+            "repair_datagrams": sender_json.get("receiver_repair_datagrams"),
+            "socket_drops": sender_json.get("receiver_socket_drops"),
+            "reports": sender_json.get("receiver_reports"),
+        }
+        if any(receiver_summary.get(key) != value for key, value in expected.items()):
+            raise RuntimeError(
+                f"{treatment} sender and receiver telemetry disagree: {expected} != {receiver_summary}"
+            )
+        if (
+            expected["received_chunks"] != expected_chunks
+            or expected["frontier_chunks"] != expected_chunks
+            or expected["accepted_datagrams"] != expected_chunks
+            or expected["valid_datagrams"]
+            != expected["accepted_datagrams"] + expected["duplicate_datagrams"]
+            or sender_json["datagrams"] < expected["valid_datagrams"]
+            or sender_json["repairs"] < expected["repair_datagrams"]
+            or expected["reports"] < 1
+        ):
+            raise RuntimeError(f"{treatment} receiver telemetry failed reconciliation: {expected}")
     output_hash = remote(
         args.receiver,
         f"sha256sum {quote(output)} | awk '{{print $1}}'\n",
@@ -350,6 +393,7 @@ nice -n 10 ionice -c2 -n7 {runtime} run --name {quote(sender_name)} --cap-add NE
             "endpoint_binary_sha256": binary_hashes,
             "source_sha256": source_hash,
             "output_sha256": output_hash,
+            "receiver_summary": receiver_summary,
             "scenario": scenario,
             "sender_rate_mbit": sender_rate_mbit,
             "design": {

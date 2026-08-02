@@ -109,6 +109,12 @@ best-effort authenticated `CANCEL`, while silence or connection loss aborts with
 the configured timeout and leaves the receiver's resumable partial object intact.
 Values from 500 milliseconds through one hour are accepted.
 
+Successful endpoints each emit one schema-versioned JSON summary. UDP sender
+summaries include the receiver's final authenticated progress and datagram
+counters; receiver summaries contain the matching local snapshot. On Linux the
+summary also reports the socket's cumulative kernel drop count when available.
+The benchmark harness reconciles these summaries before accepting a run.
+
 The v0.1 release uses TSU2. Current development uses the incompatible TSU3 wire
 protocol, which adds bounded liveness, authenticated cancellation, heartbeats,
 and an explicit completion acknowledgement. Both use a fresh mutual PSK

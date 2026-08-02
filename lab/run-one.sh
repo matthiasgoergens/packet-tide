@@ -43,6 +43,7 @@ AUTH_KEY=${TSU_AUTH_KEY_FILE:-$DATA/auth.key}
 SOURCE="$DATA/source-$FILE_BYTES-seed1.bin"
 OUTPUT="$DATA/output-$TRANSPORT.bin"
 RECEIVER_LOG="$RESULTS/receiver-$TRANSPORT.log"
+RECEIVER_SUMMARY="$RESULTS/receiver-summary-$TRANSPORT.json"
 SENDER_JSON="$RESULTS/sender-$TRANSPORT.json"
 RSYNC_CONFIG="$DATA/rsyncd.conf"
 FORWARD_QDISC="$RESULTS/qdisc-forward-$TRANSPORT.json"
@@ -63,7 +64,7 @@ fi
 if [[ ! -f $SOURCE ]] || [[ $(stat -c %s "$SOURCE") -ne $FILE_BYTES ]]; then
   python3 "$ROOT/lab/generate-data.py" "$SOURCE" "$FILE_BYTES" 1
 fi
-rm -f "$OUTPUT" "$OUTPUT".part "$OUTPUT".part.* "$RECEIVER_LOG" "$SENDER_JSON"
+rm -f "$OUTPUT" "$OUTPUT".part "$OUTPUT".part.* "$RECEIVER_LOG" "$RECEIVER_SUMMARY" "$SENDER_JSON"
 
 "$ROOT/lab/configure-network.sh" \
   "$RATE_MBIT" "$RTT_MS" "$LOSS_PERCENT" "$QUEUE_PACKETS" "$SEED" 0 \
@@ -129,6 +130,7 @@ EOF
   kill "$receiver_pid" 2>/dev/null || true
   wait "$receiver_pid" 2>/dev/null || true
   receiver_pid=''
+  printf 'null\n' >"$RECEIVER_SUMMARY"
 else
   timeout --foreground 180s ip netns exec tsu-bench-d \
     "$BINARY" receive \
@@ -157,6 +159,36 @@ else
   wait "$receiver_pid"
   receiver_pid=''
   cmp --silent "$SOURCE" "$OUTPUT"
+  tail -n 1 "$RECEIVER_LOG" >"$RECEIVER_SUMMARY"
+  jq -e '.schema_version == 1 and .role == "receiver"' "$RECEIVER_SUMMARY" >/dev/null
+  jq -e --slurpfile receiver "$RECEIVER_SUMMARY" '
+    ($receiver[0]) as $r |
+    .schema_version == 1 and
+    .role == "sender" and
+    .receiver_received_chunks == $r.received_chunks and
+    .receiver_frontier_chunks == $r.frontier_chunks and
+    .receiver_accepted_datagrams == $r.accepted_datagrams and
+    .receiver_valid_datagrams == $r.valid_datagrams and
+    .receiver_duplicate_datagrams == $r.duplicate_datagrams and
+    .receiver_invalid_datagrams == $r.invalid_datagrams and
+    .receiver_repair_datagrams == $r.repair_datagrams and
+    .receiver_socket_drops == $r.socket_drops and
+    .receiver_reports == $r.reports
+  ' "$SENDER_JSON" >/dev/null
+  if [[ $PROGRAM_TRANSPORT == udp ]]; then
+    expected_chunks=$(((FILE_BYTES + 1171) / 1172))
+    jq -e --argjson expected_chunks "$expected_chunks" '
+      .schema_version == 1 and
+      .role == "sender" and
+      .receiver_received_chunks == $expected_chunks and
+      .receiver_frontier_chunks == $expected_chunks and
+      .receiver_accepted_datagrams == $expected_chunks and
+      .receiver_valid_datagrams == (.receiver_accepted_datagrams + .receiver_duplicate_datagrams) and
+      .datagrams >= .receiver_valid_datagrams and
+      .repairs >= .receiver_repair_datagrams and
+      .receiver_reports >= 1
+    ' "$SENDER_JSON" >/dev/null
+  fi
 fi
 
 ip netns exec tsu-bench-r tc -s -j qdisc show dev tsu-right0 >"$FORWARD_QDISC"
@@ -185,6 +217,7 @@ jq -c \
   --slurpfile reverse_qdisc "$REVERSE_QDISC" \
   --slurpfile host_before "$HOST_BEFORE" \
   --slurpfile host_after "$HOST_AFTER" \
+  --slurpfile receiver_summary "$RECEIVER_SUMMARY" \
   '. + {
     transport: $transport,
     tcp_congestion_control: $tcp_cc,
@@ -218,6 +251,7 @@ jq -c \
       before: $host_before[0],
       after: $host_after[0]
     },
+    receiver_summary: $receiver_summary[0],
     input: {pattern: "python-mt19937", seed: 1},
     verified: true
   }' "$SENDER_JSON" >"$RESULT_JSON.tmp"
