@@ -23,6 +23,9 @@ ssh spider 'cd /tmp/packet-tide-lab/project && \
 `run-one.sh` transfers one deterministic incompressible file, verifies it by
 SHA-256 and byte comparison, and writes a uniquely block-identified JSON result
 below `/tmp/packet-tide-lab/results`.
+For Packet Tide treatments it also retains the receiver's schema-versioned JSON
+summary and rejects UDP results whose authenticated final counters disagree with
+the sender summary or the expected object chunk count.
 
 `run-matrix.sh` accepts rows of `FILE_BYTES RATE_MBIT RTT_MS LOSS_PERCENT SEED`,
 runs the configured CSV treatment list for every row, then writes `summary.json`
@@ -106,4 +109,16 @@ already-built debug binary on `spider`:
 
 ```sh
 nice -n 10 ionice -c2 -n7 bash lab/test-liveness.sh target/debug/packet-tide
+```
+
+## Telemetry regression
+
+`test-telemetry.sh` routes a one MiB UDP transfer through the deterministic
+`udp-fault-proxy.py`. The proxy drops selected first transmissions and duplicates
+others without inspecting authentication keys. The test reconciles proxy packet
+counts, sender transmissions, receiver accepted/duplicate/repair counters, the
+final authenticated sender snapshot, and the receiver's own JSON summary.
+
+```sh
+nice -n 10 ionice -c2 -n7 bash lab/test-telemetry.sh target/debug/packet-tide
 ```

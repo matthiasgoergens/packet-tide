@@ -163,10 +163,18 @@ so dropping excess advisory entries affects latency rather than correctness.
 At a configurable interval, initially 50-100 ms, the receiver sends a status
 report over the control connection. A report contains:
 
-- highest chunk number observed;
-- total distinct chunks received;
+- highest chunk frontier observed;
+- total distinct chunks received, including durable resume state;
+- session counts for accepted, valid, duplicate, invalid, and repair datagrams;
 - missing chunk ranges below the observed frontier;
-- optionally the receiver's measured data rate and local socket-drop counters.
+- the Linux UDP socket-drop counter when `/proc` exposes it, otherwise an explicit
+  unsupported marker.
+
+TSU3 encodes these as canonical unsigned decimal fields in every authenticated
+`M` report. The final exact snapshot is sent immediately before `COMPLETE` and is
+therefore covered by the same ordered, direction-specific control authentication.
+Invalid or unauthenticated UDP datagrams may increment only the diagnostic invalid
+counter; they never advance object progress or authenticated peer liveness.
 
 Ranges keep reports compact. If a report would become too large, it can be split
 across messages or represented as bitmap windows. Reports are cumulative enough

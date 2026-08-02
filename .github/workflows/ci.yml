@@ -41,11 +41,14 @@ jobs:
         run: |
           cargo +"$RUST_TOOLCHAIN" build --locked
           lab/test-liveness.sh target/debug/packet-tide
+          lab/test-telemetry.sh target/debug/packet-tide
 
       - name: Validate release and benchmark tooling
         run: |
           bash -n release/check-release.sh
           bash -n lab/test-liveness.sh
+          bash -n lab/test-telemetry.sh
+          python3 -m py_compile lab/udp-fault-proxy.py
           python3 -m py_compile lab/two-host/run-matrix.py lab/two-host/evaluate-release.py
 
       - name: Verify clean source package and installation
