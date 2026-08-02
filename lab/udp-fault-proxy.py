@@ -22,7 +22,7 @@ def main() -> None:
     source.settimeout(0.1)
     target = ("127.0.0.1", args.target_port)
     seen_originals: set[int] = set()
-    received = forwarded = dropped = duplicated = 0
+    received = forwarded = dropped = duplicated = oversized = 0
     last_packet: float | None = None
 
     while last_packet is None or time.monotonic() - last_packet < args.idle_seconds:
@@ -32,7 +32,7 @@ def main() -> None:
             continue
         last_packet = time.monotonic()
         received += 1
-        if len(packet) < 10 or packet[0] != 3:
+        if len(packet) < 10 or packet[0] != 4:
             source.sendto(packet, target)
             forwarded += 1
             continue
@@ -46,6 +46,10 @@ def main() -> None:
             continue
         source.sendto(packet, target)
         forwarded += 1
+        if first_original and sequence == 1:
+            source.sendto(packet + b"\x00", target)
+            forwarded += 1
+            oversized += 1
         if first_original and sequence % 31 == 0:
             source.sendto(packet, target)
             forwarded += 1
@@ -58,6 +62,7 @@ def main() -> None:
                 "forwarded": forwarded,
                 "dropped": dropped,
                 "duplicated": duplicated,
+                "oversized": oversized,
             },
             sort_keys=True,
         )

@@ -62,7 +62,7 @@ packet-tide --version
 
 The historical v0.1.0 release and its TSU2 wire protocol use the original
 `tsunami-udp` executable and artifact names. Current development is Packet Tide
-0.2.0-alpha.1 and uses the incompatible TSU3 protocol; mixed versions fail closed.
+0.2.0-alpha.1 and uses the incompatible TSU4 protocol; mixed versions fail closed.
 
 Tagged releases publish static Linux archives for x86-64 and ARM64, a clean
 Cargo source package, and `SHA256SUMS`. After downloading an archive and the
@@ -93,6 +93,7 @@ packet-tide receive \
 packet-tide send \
   --connect RECEIVER:9000 --udp-target RECEIVER:9001 \
   --file source.bin --transport udp --rate-mbps 100 \
+  --udp-payload-bytes 1172 --feedback-interval-ms 50 \
   --key-file transfer.key --idle-timeout-ms 30000
 ```
 
@@ -109,15 +110,23 @@ best-effort authenticated `CANCEL`, while silence or connection loss aborts with
 the configured timeout and leaves the receiver's resumable partial object intact.
 Values from 500 milliseconds through one hour are accepted.
 
+The sender offers the UDP file-data payload and receiver feedback interval in the
+authenticated handshake. Defaults are 1,172 bytes and 50 ms; accepted bounds are
+256–1,424 bytes and 10–10,000 ms. The receiver either accepts those exact values
+or rejects the transfer—there is no silent clamping. The 1,424-byte maximum keeps
+an IPv6 UDP datagram within a 1,500-byte path MTU; use a smaller value when the
+path MTU is smaller. Both negotiated values appear in each endpoint's JSON summary.
+
 Successful endpoints each emit one schema-versioned JSON summary. UDP sender
 summaries include the receiver's final authenticated progress and datagram
 counters; receiver summaries contain the matching local snapshot. On Linux the
 summary also reports the socket's cumulative kernel drop count when available.
 The benchmark harness reconciles these summaries before accepting a run.
 
-The v0.1 release uses TSU2. Current development uses the incompatible TSU3 wire
+The v0.1 release uses TSU2. Current development uses the incompatible TSU4 wire
 protocol, which adds bounded liveness, authenticated cancellation, heartbeats,
-and an explicit completion acknowledgement. Both use a fresh mutual PSK
+an explicit completion acknowledgement, and exact transfer-parameter negotiation.
+Both use a fresh mutual PSK
 challenge-response handshake,
 direction-specific sequenced HMAC-SHA256 control messages, authenticated TCP4
 lane greetings, and a 128-bit truncated HMAC-SHA256 tag on every UDP datagram.
@@ -131,7 +140,9 @@ Interrupted UDP transfers
 retain a stable `.part` file and durable `.part.map` receipt checkpoint beside the
 destination. Repeating the same command resumes when size and hash match; a
 different object safely starts over. Resume maps are protocol-versioned and are
-never shared across TSU1, TSU2, and TSU3.
+never shared across TSU1, TSU2, TSU3, and TSU4. Payload size is part of the durable
+map identity, so changing it starts with an empty receipt map even when size, hash,
+and the resulting chunk count happen to match.
 
 The receiver syncs data before atomically publishing each receipt checkpoint.
 Consequently, a crash can cause a few chunks to be retransmitted but cannot make a

@@ -2,8 +2,8 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-const MAGIC: &[u8; 8] = b"TSUMAP3\0";
-const HEADER_LEN: usize = 8 + 8 + 8 + 32;
+const MAGIC: &[u8; 8] = b"TSUMAP4\0";
+const HEADER_LEN: usize = 8 + 8 + 8 + 8 + 32;
 
 pub(crate) struct ResumeState {
     pub(crate) bitmap: Vec<u64>,
@@ -12,6 +12,7 @@ pub(crate) struct ResumeState {
     map_path: PathBuf,
     size: u64,
     chunks: u64,
+    payload_bytes: u64,
     hash: [u8; 32],
 }
 
@@ -20,6 +21,7 @@ impl ResumeState {
         destination: &Path,
         size: u64,
         chunks: u64,
+        payload_bytes: usize,
         hash_hex: &str,
     ) -> Result<(File, Self), Box<dyn std::error::Error + Send + Sync>> {
         let hash = decode_hash(hash_hex)?;
@@ -28,7 +30,8 @@ impl ResumeState {
         let bitmap_words = usize::try_from(chunks.div_ceil(64))
             .map_err(|_| "file has too many chunks for this platform")?;
 
-        if let Some(bitmap) = load_map(&map_path, size, chunks, hash, bitmap_words)?
+        let payload_bytes = payload_bytes as u64;
+        if let Some(bitmap) = load_map(&map_path, size, chunks, payload_bytes, hash, bitmap_words)?
             && part_path
                 .metadata()
                 .is_ok_and(|metadata| metadata.len() == size)
@@ -44,6 +47,7 @@ impl ResumeState {
                     map_path,
                     size,
                     chunks,
+                    payload_bytes,
                     hash,
                 },
             ));
@@ -63,6 +67,7 @@ impl ResumeState {
             map_path,
             size,
             chunks,
+            payload_bytes,
             hash,
         };
         state.checkpoint(&file)?;
@@ -82,6 +87,7 @@ impl ResumeState {
         stream.write_all(MAGIC)?;
         stream.write_all(&self.size.to_be_bytes())?;
         stream.write_all(&self.chunks.to_be_bytes())?;
+        stream.write_all(&self.payload_bytes.to_be_bytes())?;
         stream.write_all(&self.hash)?;
         for word in &self.bitmap {
             stream.write_all(&word.to_be_bytes())?;
@@ -113,6 +119,7 @@ fn load_map(
     path: &Path,
     size: u64,
     chunks: u64,
+    payload_bytes: u64,
     hash: [u8; 32],
     bitmap_words: usize,
 ) -> Result<Option<Vec<u64>>, Box<dyn std::error::Error + Send + Sync>> {
@@ -136,7 +143,8 @@ fn load_map(
     if &header[..8] != MAGIC
         || u64::from_be_bytes(header[8..16].try_into()?) != size
         || u64::from_be_bytes(header[16..24].try_into()?) != chunks
-        || header[24..56] != hash
+        || u64::from_be_bytes(header[24..32].try_into()?) != payload_bytes
+        || header[32..64] != hash
     {
         return Ok(None);
     }
@@ -197,14 +205,14 @@ mod tests {
     fn durable_bitmap_round_trips() {
         let destination = test_destination("resume-round-trip");
         let hash = "11".repeat(32);
-        let (file, mut state) = ResumeState::open(&destination, 2364, 2, &hash).unwrap();
+        let (file, mut state) = ResumeState::open(&destination, 2364, 2, 1172, &hash).unwrap();
         state.bitmap[0] = 1;
         state.received_count = 1;
         state.checkpoint(&file).unwrap();
         drop(file);
         drop(state);
 
-        let (file, state) = ResumeState::open(&destination, 2364, 2, &hash).unwrap();
+        let (file, state) = ResumeState::open(&destination, 2364, 2, 1172, &hash).unwrap();
         assert_eq!(state.bitmap, vec![1]);
         assert_eq!(state.received_count, 1);
         state.discard();
@@ -216,14 +224,32 @@ mod tests {
         let destination = test_destination("resume-mismatch");
         let old_hash = "22".repeat(32);
         let new_hash = "33".repeat(32);
-        let (file, mut state) = ResumeState::open(&destination, 2364, 2, &old_hash).unwrap();
+        let (file, mut state) = ResumeState::open(&destination, 2364, 2, 1172, &old_hash).unwrap();
         state.bitmap[0] = 3;
         state.received_count = 2;
         state.checkpoint(&file).unwrap();
         drop(file);
         drop(state);
 
-        let (file, state) = ResumeState::open(&destination, 2364, 2, &new_hash).unwrap();
+        let (file, state) = ResumeState::open(&destination, 2364, 2, 1172, &new_hash).unwrap();
+        assert_eq!(state.bitmap, vec![0]);
+        assert_eq!(state.received_count, 0);
+        state.discard();
+        drop(file);
+    }
+
+    #[test]
+    fn payload_mismatch_never_reuses_old_receipts() {
+        let destination = test_destination("resume-payload-mismatch");
+        let hash = "55".repeat(32);
+        let (file, mut state) = ResumeState::open(&destination, 2000, 2, 1172, &hash).unwrap();
+        state.bitmap[0] = 3;
+        state.received_count = 2;
+        state.checkpoint(&file).unwrap();
+        drop(file);
+        drop(state);
+
+        let (file, state) = ResumeState::open(&destination, 2000, 2, 1200, &hash).unwrap();
         assert_eq!(state.bitmap, vec![0]);
         assert_eq!(state.received_count, 0);
         state.discard();
@@ -234,13 +260,13 @@ mod tests {
     fn truncated_map_is_never_trusted() {
         let destination = test_destination("resume-truncated");
         let hash = "44".repeat(32);
-        let (file, state) = ResumeState::open(&destination, 2364, 2, &hash).unwrap();
+        let (file, state) = ResumeState::open(&destination, 2364, 2, 1172, &hash).unwrap();
         let map_path = state.map_path.clone();
         drop(file);
         drop(state);
         fs::write(&map_path, b"torn checkpoint").unwrap();
 
-        let (file, state) = ResumeState::open(&destination, 2364, 2, &hash).unwrap();
+        let (file, state) = ResumeState::open(&destination, 2364, 2, 1172, &hash).unwrap();
         assert_eq!(state.bitmap, vec![0]);
         assert_eq!(state.received_count, 0);
         state.discard();

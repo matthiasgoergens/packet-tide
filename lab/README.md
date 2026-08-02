@@ -78,10 +78,12 @@ Packet captures should still confirm the intended packet granularity before the
 loss results are treated as publishable.
 
 When `tcpdump` is unavailable, `capture-packets.py` can run as root inside the
-router namespace using Linux `AF_PACKET`. It reports observed IPv4-size counts and
-fails the validation criterion if any IP packet exceeds the 1,500-byte path MTU.
-With the namespaces already set up, `validate-packet-sizes.sh` performs this check
-during 16 MiB UDP, CUBIC, BBR, and four-stream CUBIC transfers.
+router namespace using Linux `AF_PACKET`. It records the configured path MTU,
+observed IPv4-size counts, and the maximum UDP IPv4 size. With the namespaces
+already set up, `validate-packet-sizes.sh` lowers the UDP path to MTU 1,280, offers
+a 1,224-byte file payload (exactly 1,280 IPv4 bytes with headers), and rejects any
+oversized packet. It also checks 1,500-byte paths during CUBIC, BBR, and four-stream
+CUBIC transfers.
 
 ## Resume regression
 

@@ -55,14 +55,20 @@ import sys
 from pathlib import Path
 
 raw = Path(sys.argv[1]).read_bytes()
-assert raw[:8] == b"TSUMAP3\0"
-size, chunks = struct.unpack(">QQ", raw[8:24])
-words = struct.iter_unpack(">Q", raw[56:])
+assert raw[:8] == b"TSUMAP4\0"
+size, chunks, payload_bytes = struct.unpack(">QQQ", raw[8:32])
+assert chunks == (size + payload_bytes - 1) // payload_bytes
+words = struct.iter_unpack(">Q", raw[64:])
 received = sum(word[0].bit_count() for word in words)
 assert 0 < received < chunks
 Path(sys.argv[2]).write_text(
     json.dumps(
-        {"file_bytes": size, "chunks": chunks, "durable_chunks_after_kill": received},
+        {
+            "file_bytes": size,
+            "chunks": chunks,
+            "udp_payload_bytes": payload_bytes,
+            "durable_chunks_after_kill": received,
+        },
         indent=2,
     )
     + "\n"
