@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import json
 import random
+import re
 import shlex
 import subprocess
 import sys
@@ -27,10 +28,105 @@ DEFAULT_SCENARIOS = (
     {"name": "lossy", "file_bytes": 16_777_216, "rate_mbit": 100.0, "rtt_ms": 100.0, "loss_percent": 1.0},
 )
 TREATMENTS = ("udp", "tcp", "tcp4")
+SUPPORTED_TREATMENTS = (
+    "udp",
+    "tcp",
+    "tcp-cubic",
+    "tcp-bbr",
+    "tcp4",
+    "tcp4-cubic",
+    "tcp4-bbr",
+)
+
+
+def treatment_transport(treatment: str) -> str:
+    return "tcp4" if treatment.startswith("tcp4") else "tcp" if treatment.startswith("tcp") else "udp"
+
+
+def treatment_cc(treatment: str) -> str | None:
+    return treatment.rsplit("-", 1)[1] if "-" in treatment else None
+
+
+def load_scenarios(path: Path | None) -> tuple[dict[str, object], ...]:
+    if path is None:
+        return DEFAULT_SCENARIOS
+    decoded = json.loads(path.read_text())
+    if not isinstance(decoded, list) or not decoded:
+        raise SystemExit("--scenario-file must contain a nonempty JSON array")
+    scenarios: list[dict[str, object]] = []
+    names: set[str] = set()
+    required = {"name", "file_bytes", "rate_mbit", "rtt_ms", "loss_percent"}
+    for index, scenario in enumerate(decoded):
+        if not isinstance(scenario, dict) or set(scenario) != required:
+            raise SystemExit(f"scenario {index} must contain exactly {sorted(required)}")
+        name = scenario["name"]
+        if (
+            not isinstance(name, str)
+            or re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", name) is None
+            or name in names
+        ):
+            raise SystemExit(f"scenario {index} has an empty or duplicate name")
+        names.add(name)
+        try:
+            file_bytes = int(scenario["file_bytes"])
+            rate_mbit = float(scenario["rate_mbit"])
+            rtt_ms = float(scenario["rtt_ms"])
+            loss_percent = float(scenario["loss_percent"])
+        except (TypeError, ValueError) as error:
+            raise SystemExit(f"scenario {name!r} contains a nonnumeric value") from error
+        if file_bytes <= 0 or rate_mbit <= 0 or rtt_ms < 0 or not 0 <= loss_percent < 100:
+            raise SystemExit(f"scenario {name!r} contains an out-of-range value")
+        scenarios.append(
+            {
+                "name": name,
+                "file_bytes": file_bytes,
+                "rate_mbit": rate_mbit,
+                "rtt_ms": rtt_ms,
+                "loss_percent": loss_percent,
+            }
+        )
+    return tuple(scenarios)
+
+
+def build_plan(
+    scenarios: tuple[dict[str, object], ...],
+    blocks: int,
+    treatments: tuple[str, ...],
+    seed: int,
+) -> list[dict[str, object]]:
+    rng = random.Random(seed)
+    bases = {scenario["name"]: rng.sample(treatments, len(treatments)) for scenario in scenarios}
+    plan: list[dict[str, object]] = []
+    block_index = 0
+    for scenario_block in range(blocks):
+        scenario_order = list(scenarios)
+        rng.shuffle(scenario_order)
+        for scenario in scenario_order:
+            base = bases[scenario["name"]]
+            rotation = scenario_block % len(treatments)
+            order = base[rotation:] + base[:rotation]
+            plan.append(
+                {
+                    "scenario": scenario["name"],
+                    "scenario_block": scenario_block,
+                    "block_index": block_index,
+                    "block_id": f"two-host-{scenario['name']}-{block_index}",
+                    "order": order,
+                    "netem_seed": seed + block_index,
+                }
+            )
+            block_index += 1
+    return plan
 
 
 def run(command: list[str], *, input_text: str | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, input=input_text, text=True, capture_output=True, check=check)
+
+
+def write_json_atomic(path: Path, value: object) -> None:
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(json.dumps(value, indent=2) + "\n")
+    temporary.replace(path)
 
 
 def ssh_options(jump: str | None) -> list[str]:
@@ -83,29 +179,94 @@ printf '%s\\n' "$(nproc)"
     return {"ssh": host, "machine_id_sha256": hashlib.sha256(lines[0].encode()).hexdigest(), "uname": lines[1], "cpus": lines[2]}
 
 
-def normalized_load(host: str, jump: str | None = None) -> float:
+def container_identity(
+    host: str, runtime: str, image: str, jump: str | None = None
+) -> dict[str, str]:
+    script = f"""
+{quote(runtime)} --version
+{quote(runtime)} image inspect {quote(image)} --format '{{{{.Digest}}}} {{{{.Id}}}}'
+"""
+    lines = remote(host, script, jump=jump).stdout.splitlines()
+    if len(lines) != 2 or len(lines[1].split()) != 2:
+        raise RuntimeError("container image must already exist with a stable digest")
+    digest, image_id = lines[1].split()
+    return {"runtime_version": lines[0], "image": image, "digest": digest, "image_id": image_id}
+
+
+def source_identity(scenario_file: Path | None) -> dict[str, object]:
+    revision = run(["git", "rev-parse", "HEAD"]).stdout.strip()
+    tracked_dirty = (
+        run(["git", "diff", "--quiet"], check=False).returncode != 0
+        or run(["git", "diff", "--cached", "--quiet"], check=False).returncode != 0
+    )
+    harness = Path(__file__).resolve()
+    return {
+        "git_commit": revision,
+        "git_tracked_worktree_dirty": tracked_dirty,
+        "harness_sha256": hashlib.sha256(harness.read_bytes()).hexdigest(),
+        "scenario_file": str(scenario_file) if scenario_file is not None else None,
+        "scenario_file_sha256": (
+            hashlib.sha256(scenario_file.read_bytes()).hexdigest()
+            if scenario_file is not None else None
+        ),
+    }
+
+
+def available_congestion_controls(host: str, jump: str | None = None) -> list[str]:
+    return remote(
+        host, "sysctl -n net.ipv4.tcp_available_congestion_control\n", jump=jump
+    ).stdout.split()
+
+
+def pressure_snapshot(host: str, jump: str | None = None) -> dict[str, object]:
     output = remote(
         host,
-        "read -r load _ </proc/loadavg\nprintf '%s %s\\n' \"$load\" \"$(nproc)\"\n",
+        """read -r load _ </proc/loadavg
+pressure() {
+  if [[ -r /proc/pressure/$1 ]]; then
+    awk '/^some / {for (i=1;i<=NF;i++) if ($i ~ /^avg10=/) {split($i,a,"="); print a[2]}}' "/proc/pressure/$1"
+  else
+    printf '0\\n'
+  fi
+}
+cpu=$(pressure cpu)
+io=$(pressure io)
+memory=$(pressure memory)
+printf '%s %s %s %s %s\\n' "$load" "$(nproc)" "${cpu:-0}" "${io:-0}" "${memory:-0}"
+""",
         jump=jump,
     ).stdout
-    load, cpus = output.split()
-    return float(load) / int(cpus)
+    load, cpus, cpu, io, memory = output.split()
+    return {
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "normalized_load_1m": float(load) / int(cpus),
+        "psi_cpu_some_avg10": float(cpu),
+        "psi_io_some_avg10": float(io),
+        "psi_memory_some_avg10": float(memory),
+    }
 
 
 def wait_idle(
     hosts: tuple[tuple[str, str | None], tuple[str, str | None]],
     ceiling: float,
     timeout: float,
-) -> dict[str, float]:
+    consecutive_samples: int,
+    sample_seconds: float,
+) -> dict[str, list[dict[str, object]]]:
     started = time.monotonic()
+    accepted: dict[str, list[dict[str, object]]] = {host: [] for host, _ in hosts}
     while True:
-        loads = {host: normalized_load(host, jump) for host, jump in hosts}
-        if all(value <= ceiling for value in loads.values()):
-            return loads
+        snapshots = {host: pressure_snapshot(host, jump) for host, jump in hosts}
+        if all(value["normalized_load_1m"] <= ceiling for value in snapshots.values()):
+            for host, snapshot in snapshots.items():
+                accepted[host].append(snapshot)
+            if all(len(values) >= consecutive_samples for values in accepted.values()):
+                return accepted
+        else:
+            accepted = {host: [] for host, _ in hosts}
         if time.monotonic() - started >= timeout:
-            raise TimeoutError(f"hosts did not become idle enough: {loads}")
-        time.sleep(5)
+            raise TimeoutError(f"hosts did not remain idle enough: {snapshots}")
+        time.sleep(sample_seconds)
 
 
 def copy_to(local: Path, host: str, destination: str, jump: str | None = None) -> None:
@@ -172,8 +333,9 @@ def create_source(host: str, work: str, size: int, jump: str | None = None) -> s
     path = f"{work}/source-{size}.bin"
     script = f"""
 if [[ ! -f {quote(path)} || $(stat -c %s {quote(path)}) -ne {size} ]]; then
-  nice -n 10 ionice -c2 -n7 dd if=/dev/zero of={quote(path)} bs=1048576 count={size // 1048576} status=none
+  nice -n 10 ionice -c2 -n7 truncate -s {size} {quote(path)}
 fi
+test $(stat -c %s {quote(path)}) -eq {size}
 sha256sum {quote(path)} | awk '{{print $1}}'
 """
     return remote(host, script, jump=jump).stdout.strip()
@@ -187,6 +349,7 @@ def run_treatment(
     treatment_index: int,
     scenario: dict[str, object],
     treatment: str,
+    network_seed: int,
     source_hash: str,
     host_info: dict[str, dict[str, str]],
     binary_hashes: dict[str, str],
@@ -194,7 +357,7 @@ def run_treatment(
     suffix = f"{run_id}-{block_index}-{treatment_index}"
     receiver_name = f"tsu-r-{suffix}"
     sender_name = f"tsu-s-{suffix}"
-    control_port = args.base_port + (block_index * len(TREATMENTS) + treatment_index) * 2
+    control_port = args.base_port + (block_index * len(args.treatments) + treatment_index) * 2
     udp_port = control_port + 1
     output = f"{work}/output-{block_index}-{treatment}.bin"
     receiver_log = f"{work}/receiver-{block_index}-{treatment}.log"
@@ -251,16 +414,26 @@ exit 1
 
     loss = float(scenario["loss_percent"])
     netem_loss = "" if loss == 0 else f" loss random {loss}%"
-    seed = args.seed + block_index * 10 + treatment_index
+    seed = network_seed
     sender_rate_mbit = (
         args.udp_rate_mbit
         if treatment == "udp" and args.udp_rate_mbit is not None
         else scenario["rate_mbit"]
     )
+    program_transport = treatment_transport(treatment)
+    congestion_control = treatment_cc(treatment)
+    set_congestion_control = (
+        ""
+        if congestion_control is None
+        else (
+            f"sysctl -q -w net.ipv4.tcp_congestion_control={congestion_control} && "
+            f'test "$(sysctl -n net.ipv4.tcp_congestion_control)" = {congestion_control} && '
+        )
+    )
     sender_script = f"""
 nice -n 10 ionice -c2 -n7 {runtime} run --name {quote(sender_name)} --cap-add NET_ADMIN \
   -v {quote(work)}:/work:z {image} sh -lc \
-  {quote(f'iface=$(ip route show default | head -n1 | cut -d " " -f5); test -n "$iface"; ip link set dev "$iface" gso_max_size 1500 gso_ipv4_max_size 1500 gro_max_size 1500 gro_ipv4_max_size 1500; tc qdisc replace dev "$iface" root netem limit 10000 delay {scenario["rtt_ms"]}ms{netem_loss} rate {scenario["rate_mbit"]}mbit seed {seed} && exec /work/packet-tide send --connect {args.receiver_address}:{control_port} --udp-target {args.receiver_address}:{udp_port} --file /work/source-{scenario["file_bytes"]}.bin --transport {treatment} --rate-mbps {sender_rate_mbit} --repair-cooldown-ms {2 * float(scenario["rtt_ms"]) + 50:.0f} --udp-payload-bytes {args.udp_payload_bytes} --feedback-interval-ms {args.feedback_interval_ms} --key-file /work/auth.key')}
+  {quote(f'iface=$(ip route show default | head -n1 | cut -d " " -f5); test -n "$iface"; ip link set dev "$iface" gso_max_size 1500 gso_ipv4_max_size 1500 gro_max_size 1500 gro_ipv4_max_size 1500; tc qdisc replace dev "$iface" root netem limit 10000 delay {scenario["rtt_ms"]}ms{netem_loss} rate {scenario["rate_mbit"]}mbit seed {seed} && {set_congestion_control}exec /work/packet-tide send --connect {args.receiver_address}:{control_port} --udp-target {args.receiver_address}:{udp_port} --file /work/source-{scenario["file_bytes"]}.bin --transport {program_transport} --rate-mbps {sender_rate_mbit} --repair-cooldown-ms {2 * float(scenario["rtt_ms"]) + 50:.0f} --udp-payload-bytes {args.udp_payload_bytes} --feedback-interval-ms {args.feedback_interval_ms} --key-file /work/auth.key')}
 """
     sent = remote(
         args.sender,
@@ -338,7 +511,7 @@ nice -n 10 ionice -c2 -n7 {runtime} run --name {quote(sender_name)} --cap-add NE
     receiver_summary = receiver_summaries[-1] if receiver_summaries else None
     if sender_json.get("schema_version") == 1 and receiver_summary is None:
         raise RuntimeError(f"{treatment} receiver did not emit a schema-versioned summary:\n{logs}")
-    if treatment == "udp" and sender_json.get("schema_version") == 1:
+    if program_transport == "udp" and sender_json.get("schema_version") == 1:
         expected_chunks = (
             scenario["file_bytes"] + args.udp_payload_bytes - 1
         ) // args.udp_payload_bytes
@@ -392,8 +565,11 @@ nice -n 10 ionice -c2 -n7 {runtime} run --name {quote(sender_name)} --cap-add NE
             check=False,
             jump=args.receiver_proxy_jump,
         )
+    wire_transport = sender_json["transport"]
     sender_json.update(
         {
+            "transport": treatment,
+            "wire_transport": wire_transport,
             "verified": True,
             "binary_sha256": binary_hashes["sender"],
             "endpoint_binary_sha256": binary_hashes,
@@ -401,13 +577,19 @@ nice -n 10 ionice -c2 -n7 {runtime} run --name {quote(sender_name)} --cap-add NE
             "output_sha256": output_hash,
             "receiver_summary": receiver_summary,
             "scenario": scenario,
+            "treatment": treatment,
+            "tcp_congestion_control_requested": congestion_control,
+            "tcp_congestion_control_actual": congestion_control,
             "sender_rate_mbit": sender_rate_mbit,
+            "netem_seed": seed,
             "design": {
                 "block_id": f"two-host-{scenario['name']}-{block_index}",
+                "block_index": block_index,
                 "block_order": block_index,
                 "treatment_order": treatment_index,
+                "netem_seed": seed,
                 "randomization_seed": args.seed,
-                "expected_treatments": list(TREATMENTS),
+                "expected_treatments": list(args.treatments),
             },
             "hosts": host_info,
             "isolation": f"ephemeral sender container with netem on its private interface; {args.receiver_mode} receiver",
@@ -427,10 +609,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--receiver-binary", type=Path, help="receiver-architecture release binary; defaults to --binary")
     parser.add_argument("--key-file", required=True, type=Path, help="32-byte v0.1 PSK")
     parser.add_argument("--results", type=Path, default=Path("two-host-results"))
+    parser.add_argument("--scenario-file", type=Path, help="JSON array of exploratory scenarios")
+    parser.add_argument(
+        "--study-kind",
+        choices=("confirmatory", "exploratory"),
+        default="confirmatory",
+    )
+    parser.add_argument(
+        "--treatments",
+        default=",".join(TREATMENTS),
+        help="comma-separated randomized treatments",
+    )
     parser.add_argument("--blocks", type=int, default=12)
     parser.add_argument("--seed", type=int, default=5101)
     parser.add_argument("--base-port", type=int, default=24000)
     parser.add_argument("--max-normalized-load", type=float, default=0.75)
+    parser.add_argument("--idle-consecutive-samples", type=int, default=3)
+    parser.add_argument("--idle-sample-seconds", type=float, default=2.0)
     parser.add_argument(
         "--udp-rate-mbit",
         type=float,
@@ -452,24 +647,35 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    scenarios = DEFAULT_SCENARIOS
+    scenarios = load_scenarios(args.scenario_file)
+    args.treatments = tuple(args.treatments.split(","))
+    if (
+        not args.treatments
+        or len(set(args.treatments)) != len(args.treatments)
+        or any(value not in SUPPORTED_TREATMENTS for value in args.treatments)
+        or "udp" not in args.treatments
+    ):
+        raise SystemExit(
+            f"--treatments must be unique supported values including udp: {SUPPORTED_TREATMENTS}"
+        )
     if args.smoke:
         args.blocks = 1
-        scenarios = tuple({**scenario, "file_bytes": 1_048_576} for scenario in DEFAULT_SCENARIOS)
+        scenarios = tuple({**scenario, "file_bytes": 1_048_576} for scenario in scenarios)
+    required_ports = len(scenarios) * args.blocks * len(args.treatments) * 2
+    if args.base_port < 1024 or args.base_port + required_ports - 1 > 65_535:
+        raise SystemExit("the selected matrix does not fit in the available TCP/UDP port range")
     if args.blocks < 2 and not (args.smoke or args.allow_same_host_smoke):
         raise SystemExit("--blocks must be at least 2")
     if args.udp_rate_mbit is not None and args.udp_rate_mbit <= 0:
         raise SystemExit("--udp-rate-mbit must be positive")
+    if args.idle_consecutive_samples < 1 or args.idle_sample_seconds <= 0:
+        raise SystemExit("idle sampling values must be positive")
     if not 256 <= args.udp_payload_bytes <= 1424:
         raise SystemExit("--udp-payload-bytes must be between 256 and 1424")
     if not 10 <= args.feedback_interval_ms <= 10_000:
         raise SystemExit("--feedback-interval-ms must be between 10 and 10000")
     if args.dry_run:
-        rng = random.Random(args.seed)
-        print(json.dumps([
-            {"scenario": scenario, "block": block, "order": rng.sample(TREATMENTS, len(TREATMENTS))}
-            for scenario in scenarios for block in range(args.blocks)
-        ], indent=2))
+        print(json.dumps(build_plan(scenarios, args.blocks, args.treatments, args.seed), indent=2))
         return
     if not args.binary.is_file() or not args.key_file.is_file():
         raise SystemExit("--binary and --key-file must be files")
@@ -487,6 +693,15 @@ def main() -> None:
         "sender": identity(args.sender, args.sender_proxy_jump),
         "receiver": identity(args.receiver, args.receiver_proxy_jump),
     }
+    container_info = container_identity(
+        args.sender, args.runtime, args.image, args.sender_proxy_jump
+    )
+    source_info = source_identity(args.scenario_file)
+    available_cc = available_congestion_controls(args.sender, args.sender_proxy_jump)
+    requested_cc = {value for value in map(treatment_cc, args.treatments) if value is not None}
+    missing_cc = requested_cc - set(available_cc)
+    if missing_cc:
+        raise SystemExit(f"requested unavailable congestion controls: {sorted(missing_cc)}")
     if (
         host_info["sender"]["machine_id_sha256"] == host_info["receiver"]["machine_id_sha256"]
         and not args.allow_same_host_smoke
@@ -501,32 +716,31 @@ def main() -> None:
         else uuid.uuid4().hex[:10]
     )
     work, binary_hashes = stage(args, run_id)
-    rng = random.Random(args.seed)
-    plan = []
-    block_index = 0
-    for scenario in scenarios:
-        for scenario_block in range(args.blocks):
-            plan.append(
-                {
-                    "scenario": scenario["name"],
-                    "scenario_block": scenario_block,
-                    "block_id": f"two-host-{scenario['name']}-{block_index}",
-                    "order": rng.sample(TREATMENTS, len(TREATMENTS)),
-                }
-            )
-            block_index += 1
+    plan = build_plan(scenarios, args.blocks, args.treatments, args.seed)
     preregistration = {
         "schema": 1,
+        "study_kind": args.study_kind,
+        "smoke_mode": args.smoke,
         "run_id": run_id,
         "endpoint_binary_sha256": binary_hashes,
         "hosts": host_info,
+        "container": container_info,
+        "source": source_info,
+        "available_tcp_congestion_control": available_cc,
         "scenarios": list(scenarios),
         "blocks_per_scenario": args.blocks,
-        "treatments": list(TREATMENTS),
+        "treatments": list(args.treatments),
         "randomization_seed": args.seed,
         "udp_sender_rate_mbit": args.udp_rate_mbit,
         "udp_payload_bytes": args.udp_payload_bytes,
         "feedback_interval_ms": args.feedback_interval_ms,
+        "idle_gate": {
+            "maximum_normalized_load_1m": args.max_normalized_load,
+            "consecutive_samples": args.idle_consecutive_samples,
+            "sample_seconds": args.idle_sample_seconds,
+            "scope": "before every treatment",
+            "recorded_pressure": ["cpu.some.avg10", "io.some.avg10", "memory.some.avg10"],
+        },
         "sender_private_interface_offload_cap_bytes": 1500,
         "plan": plan,
         "release_gates": {
@@ -534,12 +748,37 @@ def main() -> None:
             "clean_udp_over_best_tcp_upper_95pct_max": 1.05,
             "lossy_best_tcp_over_udp_lower_95pct_min": 1.25,
         },
+        "analysis_plan": {
+            "exclusions": [
+                "incomplete randomized block",
+                "failed file or digest verification",
+                "host load above the preregistered idle gate before a block",
+            ],
+            "summaries": [
+                "median elapsed time and goodput by scenario and treatment",
+                "paired UDP-to-each-baseline elapsed-time ratios",
+                "median absolute deviation and 95% block-bootstrap intervals",
+            ],
+            "bootstrap_replicates": 10000,
+            "bootstrap_seed": 0,
+            "minimum_complete_blocks_per_scenario": 4,
+            "decision_rule": (
+                "exploratory crossover mapping only; no confirmatory pass/fail claim"
+                if args.study_kind == "exploratory"
+                else "apply the separately frozen release gates"
+            ),
+        },
     }
     if previous_preregistration is not None:
         comparable_keys = (
             "run_id",
+            "study_kind",
+            "smoke_mode",
             "endpoint_binary_sha256",
             "hosts",
+            "container",
+            "source",
+            "available_tcp_congestion_control",
             "scenarios",
             "blocks_per_scenario",
             "treatments",
@@ -547,9 +786,11 @@ def main() -> None:
             "udp_sender_rate_mbit",
             "udp_payload_bytes",
             "feedback_interval_ms",
+            "idle_gate",
             "sender_private_interface_offload_cap_bytes",
             "plan",
             "release_gates",
+            "analysis_plan",
         )
         mismatches = [
             key
@@ -575,62 +816,109 @@ def main() -> None:
     else:
         preregistration_path.write_text(json.dumps(preregistration, indent=2) + "\n")
     try:
-        block_index = 0
-        for scenario in scenarios:
-            source_hash = create_source(
-                args.sender,
-                work,
-                int(scenario["file_bytes"]),
-                args.sender_proxy_jump,
-            )
-            for scenario_block in range(args.blocks):
-                block_id = f"two-host-{scenario['name']}-{block_index}"
-                existing_paths = {
-                    treatment: args.results / f"result-{block_id}-{treatment}.json"
-                    for treatment in TREATMENTS
-                }
-                existing = {
-                    treatment: path
-                    for treatment, path in existing_paths.items()
-                    if path.is_file()
-                }
-                if existing:
-                    if len(existing) != len(TREATMENTS):
-                        raise RuntimeError(
-                            f"cannot resume partial randomized block {block_id}: {sorted(existing)}"
-                        )
-                    for treatment, path in existing.items():
-                        result = json.loads(path.read_text())
-                        if (
-                            not result.get("verified")
-                            or result.get("transport") != treatment
-                            or result.get("design", {}).get("block_id") != block_id
-                            or result.get("endpoint_binary_sha256") != binary_hashes
-                        ):
-                            raise RuntimeError(f"invalid completed result in {path}")
-                    print(f"skipping complete block {block_id}", flush=True)
-                    block_index += 1
-                    continue
-                loads = wait_idle(
-                    (
-                        (args.sender, args.sender_proxy_jump),
-                        (args.receiver, args.receiver_proxy_jump),
-                    ),
-                    args.max_normalized_load,
-                    args.idle_timeout,
+        scenarios_by_name = {scenario["name"]: scenario for scenario in scenarios}
+        source_hashes: dict[int, str] = {}
+        new_quarantines = 0
+        for entry in plan:
+            block_index = int(entry["block_index"])
+            scenario_block = int(entry["scenario_block"])
+            scenario = scenarios_by_name[entry["scenario"]]
+            block_id = str(entry["block_id"])
+            quarantine_path = args.results / f"quarantine-{block_id}.json"
+            journal_path = args.results / f"in-progress-{block_id}.json"
+            if journal_path.is_file() and not quarantine_path.is_file():
+                journal = json.loads(journal_path.read_text())
+                journal.update(
+                    {
+                        "excluded_at": datetime.now(timezone.utc).isoformat(),
+                        "reason": "controller stopped while this block was in progress",
+                    }
                 )
-                order = plan[block_index]["order"]
-                for treatment_index, treatment in enumerate(order):
+                write_json_atomic(quarantine_path, journal)
+                journal_path.unlink()
+            if quarantine_path.is_file():
+                print(f"skipping preregistered excluded block {block_id}", flush=True)
+                continue
+            file_bytes = int(scenario["file_bytes"])
+            if file_bytes not in source_hashes:
+                source_hashes[file_bytes] = create_source(
+                    args.sender, work, file_bytes, args.sender_proxy_jump
+                )
+            source_hash = source_hashes[file_bytes]
+            existing_paths = {
+                treatment: args.results / f"result-{block_id}-{treatment}.json"
+                for treatment in args.treatments
+            }
+            existing = {
+                treatment: path for treatment, path in existing_paths.items() if path.is_file()
+            }
+            if existing:
+                if len(existing) != len(args.treatments):
+                    raise RuntimeError(
+                        f"partial published randomized block {block_id}: {sorted(existing)}"
+                    )
+                for treatment, path in existing.items():
+                    result = json.loads(path.read_text())
+                    if (
+                        result.get("verified") is not True
+                        or result.get("treatment", result.get("transport")) != treatment
+                        or result.get("design", {}).get("block_id") != block_id
+                        or result.get("endpoint_binary_sha256") != binary_hashes
+                        or result.get("source_sha256") != result.get("output_sha256")
+                    ):
+                        raise RuntimeError(f"invalid completed result in {path}")
+                print(f"skipping complete block {block_id}", flush=True)
+                continue
+            block_results: list[tuple[str, dict[str, object]]] = []
+            journal: dict[str, object] = {
+                "block_id": block_id,
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "completed_treatments": [],
+                "observations": [],
+            }
+            write_json_atomic(journal_path, journal)
+            try:
+                for treatment_index, treatment in enumerate(entry["order"]):
+                    loads = wait_idle(
+                        (
+                            (args.sender, args.sender_proxy_jump),
+                            (args.receiver, args.receiver_proxy_jump),
+                        ),
+                        args.max_normalized_load,
+                        args.idle_timeout,
+                        args.idle_consecutive_samples,
+                        args.idle_sample_seconds,
+                    )
                     result = run_treatment(
                         args, work, run_id, block_index, treatment_index, scenario,
-                        treatment, source_hash, host_info, binary_hashes,
+                        treatment, int(entry["netem_seed"]), source_hash, host_info, binary_hashes,
                     )
                     result["design"]["scenario_block"] = scenario_block
-                    result["host_load_before_block"] = loads
-                    path = args.results / f"result-{result['design']['block_id']}-{treatment}.json"
+                    result["admission_load_before_treatment"] = loads
+                    block_results.append((treatment, result))
+                    journal["completed_treatments"] = [name for name, _ in block_results]
+                    journal["observations"] = [value for _, value in block_results]
+                    write_json_atomic(journal_path, journal)
+                for treatment, result in block_results:
+                    path = existing_paths[treatment]
                     path.write_text(json.dumps(result, indent=2) + "\n")
                     print(path, flush=True)
-                block_index += 1
+                journal_path.unlink()
+            except BaseException as error:
+                journal.update(
+                    {
+                        "excluded_at": datetime.now(timezone.utc).isoformat(),
+                        "reason": str(error) or type(error).__name__,
+                    }
+                )
+                write_json_atomic(quarantine_path, journal)
+                journal_path.unlink(missing_ok=True)
+                new_quarantines += 1
+                print(f"quarantined incomplete block {block_id}: {error}", file=sys.stderr)
+                if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                    raise
+        if new_quarantines:
+            raise RuntimeError(f"{new_quarantines} new randomized blocks were quarantined")
     finally:
         cleanup(
             args.sender,

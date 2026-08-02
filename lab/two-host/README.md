@@ -1,4 +1,4 @@
-# Two-host release benchmark
+# Two-host randomized benchmarks
 
 `run-matrix.py` reproduces the v0.1 comparison on two independent SSH-reachable
 Linux machines. It stages one exact static release binary and one key on both
@@ -47,8 +47,8 @@ it must be chosen before a confirmatory run, not adjusted from its observations.
 If an idle-gate timeout interrupts a run between complete blocks, rerun the same
 command with `--resume` and, if desired, a longer `--idle-timeout`. Continuation
 reuses the original schedule and run ID, validates host and artifact provenance,
-skips only complete three-treatment blocks, rejects partial blocks, and writes a
-numbered continuation record. Native receivers are cleaned up by the exact
+skips complete blocks, retains incomplete observations in an explicit quarantine
+record, and writes a numbered continuation record. Native receivers are cleaned up by the exact
 run-scoped executable path, so an interrupted SSH controller cannot leave a port
 collision for the next continuation.
 
@@ -65,3 +65,39 @@ When the hosts have different architectures, the preregistration records one
 artifact hash per endpoint and requires that exact pair for every treatment.
 `--sender-proxy-jump` and `--receiver-proxy-jump` use OpenSSH ProxyJump for
 endpoints that are only routed from another machine.
+
+## Exploratory crossover matrix
+
+`exploratory-v1.json` is a deliberately fractional sweep across 64 KiB–64 MiB
+files, 20–100 ms RTT, and 0–1% random loss. Five complete blocks per cell compare
+UDP with one- and four-stream CUBIC and BBR. Scenario rows are interleaved across
+time; within each scenario, cyclic randomized treatment orders put every treatment
+in every ordinal position exactly once. All treatments in a block share one
+preregistered netem seed.
+
+Before every treatment, both hosts must pass three consecutive idle samples. Each
+sample retains normalized load plus Linux CPU, I/O, and memory pressure. A failed
+or interrupted block is quarantined and never silently rerun after observations
+exist. At least four complete blocks per scenario are required for the descriptive
+summary.
+
+```sh
+python3 lab/two-host/run-matrix.py \
+  --sender spider --receiver matthias@192.168.66.82 \
+  --receiver-proxy-jump spider --receiver-address 192.168.66.82 \
+  --binary /path/to/packet-tide-x86_64 \
+  --receiver-binary /path/to/packet-tide-aarch64 \
+  --key-file /secure/path/benchmark.key \
+  --scenario-file lab/two-host/exploratory-v1.json \
+  --study-kind exploratory --blocks 5 \
+  --treatments udp,tcp-cubic,tcp-bbr,tcp4-cubic,tcp4-bbr \
+  --results results/raw/exploratory-tsu4
+
+python3 lab/two-host/evaluate-exploratory.py results/raw/exploratory-tsu4
+```
+
+The exploratory evaluator validates the frozen schedule, complete blocks, endpoint
+and artifact identities, realized order, and file hashes. It reports medians,
+median absolute deviation, paired UDP/baseline ratios, and deterministic two-sided
+95% block-bootstrap intervals. Its classifications are descriptive only and are
+not a confirmatory performance claim.

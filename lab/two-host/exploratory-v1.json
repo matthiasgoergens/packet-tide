@@ -1,0 +1,10 @@
+[
+  {"name":"setup-64k-clean","file_bytes":65536,"rate_mbit":100.0,"rtt_ms":20.0,"loss_percent":0.0},
+  {"name":"small-1m-clean","file_bytes":1048576,"rate_mbit":100.0,"rtt_ms":20.0,"loss_percent":0.0},
+  {"name":"bulk-16m-clean","file_bytes":16777216,"rate_mbit":100.0,"rtt_ms":20.0,"loss_percent":0.0},
+  {"name":"bulk-64m-clean","file_bytes":67108864,"rate_mbit":100.0,"rtt_ms":20.0,"loss_percent":0.0},
+  {"name":"bulk-16m-high-rtt","file_bytes":16777216,"rate_mbit":100.0,"rtt_ms":100.0,"loss_percent":0.0},
+  {"name":"bulk-16m-loss-0p1","file_bytes":16777216,"rate_mbit":100.0,"rtt_ms":100.0,"loss_percent":0.1},
+  {"name":"bulk-16m-loss-1","file_bytes":16777216,"rate_mbit":100.0,"rtt_ms":100.0,"loss_percent":1.0},
+  {"name":"small-1m-loss-1","file_bytes":1048576,"rate_mbit":100.0,"rtt_ms":100.0,"loss_percent":1.0}
+]
