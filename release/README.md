@@ -49,9 +49,8 @@ cargo install --locked --path tsunami-source/tsunami-udp-VERSION
 
 ## Maintainer sequence
 
-The repository currently has no public Git remote. Choose and configure that
-remote before the first release; do not add a guessed repository URL to Cargo
-metadata or documentation.
+The public repository is
+[matthiasgoergens/packet-tide](https://github.com/matthiasgoergens/packet-tide).
 
 1. Ensure CI passes on the intended release commit.
 2. Run the independent-host matrix and require

@@ -1,5 +1,7 @@
 # tsunami-udp
 
+[![CI](https://github.com/matthiasgoergens/packet-tide/actions/workflows/ci.yml/badge.svg)](https://github.com/matthiasgoergens/packet-tide/actions/workflows/ci.yml)
+
 An experimental file-transfer tool that uses a small control path and paced UDP
 for bulk data. The long-term direction includes fountain codes, but the first
 implementation deliberately uses a much simpler selective-repeat protocol.
@@ -60,7 +62,7 @@ tsunami-udp --version
 
 Tagged releases publish static Linux archives for x86-64 and ARM64, a clean
 Cargo source package, and `SHA256SUMS`. After downloading an archive and the
-checksum file from the hosting repository's Releases page:
+checksum file from the [Packet Tide releases page](https://github.com/matthiasgoergens/packet-tide/releases):
 
 ```sh
 sha256sum --check --ignore-missing SHA256SUMS
@@ -69,9 +71,8 @@ sudo install -m 0755 tsunami-udp-VERSION-TARGET/tsunami-udp /usr/local/bin/
 tsunami-udp --version
 ```
 
-The project does not yet have a configured public Git remote, so this README
-deliberately does not guess a release URL. See [release/README.md](release/README.md)
-for the exact artifact names, source-package installation, and maintainer checks.
+See [release/README.md](release/README.md) for the exact artifact names,
+source-package installation, and maintainer checks.
 
 Generate a 256-bit shared key once, then copy it to the other endpoint through a
 secure channel. `keygen` creates a new mode-0600 file and refuses to overwrite an
