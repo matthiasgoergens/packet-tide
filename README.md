@@ -26,7 +26,7 @@ The initial implementation should have:
 - one file per transfer;
 - a session-bound authentication tag and chunk number in every datagram;
 - payloads sized to avoid IP fragmentation (about 1,200 bytes by default);
-- configurable token-bucket pacing;
+- automatic receiver-feedback rate control with an exact fixed-rate override;
 - periodic missing-range reports rather than per-packet acknowledgements;
 - retransmission of missing chunks;
 - bounded receiver memory and direct writes to a temporary file;
@@ -39,8 +39,8 @@ file. It intentionally excludes directory synchronization, delta reuse, multiple
 files, compression, and restart/resume so that it measures the transports rather
 than unrelated synchronization work.
 
-Directory synchronization, content-defined chunk reuse, automatic rate control,
-encryption, and fountain coding are later milestones. Version 0.1 authenticates
+Directory synchronization, content-defined chunk reuse, encryption, and fountain
+coding are later milestones. Version 0.1 authenticates
 peers and traffic but deliberately does not encrypt file contents or metadata.
 
 Integration with rsync is also deferred. Once the standalone transport is correct
@@ -92,16 +92,23 @@ packet-tide receive \
 
 packet-tide send \
   --connect RECEIVER:9000 --udp-target RECEIVER:9001 \
-  --file source.bin --transport udp --rate-mbps 100 \
+  --file source.bin --transport udp \
   --udp-payload-bytes 1172 --feedback-interval-ms 50 \
   --key-file transfer.key --idle-timeout-ms 30000
 ```
 
 Allow inbound TCP 9000 and UDP 9001 at the receiver. `tcp` and `tcp4` are also
-available as benchmark transports. The fixed UDP rate is intentionally not a
-congestion controller: start below the expected path capacity and increase it
-carefully, because an excessive rate creates self-inflicted loss and may trigger
-network policing.
+available as benchmark transports. UDP defaults to automatic pacing between 10
+Mbit/s and 10 Gbit/s; `--min-rate-mbps` and `--max-rate-mbps` bound that search.
+The controller raises its pace when authenticated useful receive throughput follows
+the offered load and backs off on stalls, duplicate work, or receiver socket drops.
+Aggregate decision counts and up to 4,096 individual decisions are included in
+the sender's JSON result, keeping telemetry bounded for very long transfers.
+
+For a reproducible fixed-rate experiment, pass `--rate-mbps 100`. That option is
+an override: it disables adaptation and cannot be combined with the automatic
+rate bounds. Existing benchmark commands therefore retain their exact fixed-rate
+semantics.
 
 Both endpoints default to a 30-second authenticated-control idle timeout. During
 UDP transfer the sender emits `PING` heartbeats and the receiver answers `PONG`;
