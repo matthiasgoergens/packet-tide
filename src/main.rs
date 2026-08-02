@@ -982,6 +982,18 @@ fn receive_udp(
     }
 
     let (file, mut state) = ResumeState::open(destination, hello.size, hello.chunks, &hello.hash)?;
+    let mut object_hasher = Sha256::new();
+    let mut hash_frontier = 0_u64;
+    let mut hash_buffer = vec![0_u8; 1024 * 1024];
+    advance_hash_frontier(
+        &file,
+        &state.bitmap,
+        hello.chunks,
+        hello.size,
+        &mut hash_frontier,
+        &mut object_hasher,
+        &mut hash_buffer,
+    )?;
     control.send("READY")?;
     for (index, word) in state.bitmap.iter().copied().enumerate() {
         if word != 0 {
@@ -1069,6 +1081,17 @@ fn receive_udp(
                     bitmap_insert(&mut state.bitmap, sequence);
                     state.received_count += 1;
                     checkpoint_dirty = true;
+                    if state.received_count % 64 == 0 || (repair && sequence == hash_frontier) {
+                        advance_hash_frontier(
+                            &file,
+                            &state.bitmap,
+                            hello.chunks,
+                            hello.size,
+                            &mut hash_frontier,
+                            &mut object_hasher,
+                            &mut hash_buffer,
+                        )?;
+                    }
                 }
                 highest = Some(highest.map_or(sequence, |old| old.max(sequence)));
             }
@@ -1101,8 +1124,20 @@ fn receive_udp(
         }
 
         if ended && state.received_count == hello.chunks {
+            advance_hash_frontier(
+                &file,
+                &state.bitmap,
+                hello.chunks,
+                hello.size,
+                &mut hash_frontier,
+                &mut object_hasher,
+                &mut hash_buffer,
+            )?;
+            if hash_frontier != hello.chunks {
+                return Err("complete receipt map has a hash-frontier gap".into());
+            }
             file.sync_all()?;
-            let actual_hash = hash_open_file(&file)?;
+            let actual_hash = hex_digest(object_hasher.finalize().as_slice());
             if actual_hash != hello.hash {
                 control.send("ERROR hash-mismatch")?;
                 state.discard();
@@ -1172,6 +1207,40 @@ fn highest_received(bitmap: &[u64]) -> Option<u64> {
         .map(|(index, word)| index as u64 * 64 + (63 - word.leading_zeros() as u64))
 }
 
+fn advance_hash_frontier(
+    file: &File,
+    bitmap: &[u64],
+    chunks: u64,
+    size: u64,
+    frontier: &mut u64,
+    hasher: &mut Sha256,
+    buffer: &mut [u8],
+) -> AnyResult<()> {
+    let start = *frontier;
+    let mut end = start;
+    while end < chunks && bitmap_contains(bitmap, end) {
+        end += 1;
+    }
+    let mut offset = start
+        .checked_mul(PAYLOAD_SIZE as u64)
+        .ok_or("hash frontier offset overflow")?;
+    let byte_end = end
+        .checked_mul(PAYLOAD_SIZE as u64)
+        .ok_or("hash frontier offset overflow")?
+        .min(size);
+    while offset < byte_end {
+        let wanted = (byte_end - offset).min(buffer.len() as u64) as usize;
+        let count = file.read_at(&mut buffer[..wanted], offset)?;
+        if count == 0 {
+            return Err("short read while advancing object hash".into());
+        }
+        hasher.update(&buffer[..count]);
+        offset += count as u64;
+    }
+    *frontier = end;
+    Ok(())
+}
+
 fn mature_frontier(
     history: &mut VecDeque<(Instant, u64)>,
     now: Instant,
@@ -1196,21 +1265,6 @@ fn mature_frontier(
         .rev()
         .find(|(seen, _)| *seen <= cutoff)
         .map_or(0, |(_, value)| *value)
-}
-
-fn hash_open_file(file: &File) -> AnyResult<String> {
-    let mut file = file.try_clone()?;
-    file.seek(SeekFrom::Start(0))?;
-    let mut hasher = Sha256::new();
-    let mut buffer = vec![0_u8; 1024 * 1024];
-    loop {
-        let count = file.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        hasher.update(&buffer[..count]);
-    }
-    Ok(hex_digest(hasher.finalize().as_slice()))
 }
 
 enum ControlEvent {
@@ -1475,5 +1529,53 @@ mod tests {
         assert_eq!(Pacer::new(12_500_000.0).batch_bytes, 25_000);
         assert_eq!(Pacer::new(1.0).batch_bytes, 1_200);
         assert_eq!(Pacer::new(1_000_000_000.0).batch_bytes, 65_536);
+    }
+
+    #[test]
+    fn object_hash_advances_only_over_contiguous_received_chunks() {
+        let path =
+            std::env::temp_dir().join(format!("tsunami-udp-hash-frontier-{}", std::process::id()));
+        let bytes = vec![0x5a; PAYLOAD_SIZE * 3];
+        fs::write(&path, &bytes).unwrap();
+        let file = File::open(&path).unwrap();
+        let mut bitmap = vec![0_u64; 1];
+        bitmap_insert(&mut bitmap, 0);
+        bitmap_insert(&mut bitmap, 2);
+        let mut frontier = 0;
+        let mut hasher = Sha256::new();
+        let mut buffer = vec![0_u8; 4096];
+        advance_hash_frontier(
+            &file,
+            &bitmap,
+            3,
+            bytes.len() as u64,
+            &mut frontier,
+            &mut hasher,
+            &mut buffer,
+        )
+        .unwrap();
+        assert_eq!(frontier, 1);
+        assert_eq!(
+            hex_digest(hasher.clone().finalize().as_slice()),
+            hex_digest(Sha256::digest(&bytes[..PAYLOAD_SIZE]).as_slice())
+        );
+
+        bitmap_insert(&mut bitmap, 1);
+        advance_hash_frontier(
+            &file,
+            &bitmap,
+            3,
+            bytes.len() as u64,
+            &mut frontier,
+            &mut hasher,
+            &mut buffer,
+        )
+        .unwrap();
+        assert_eq!(frontier, 3);
+        assert_eq!(
+            hex_digest(hasher.finalize().as_slice()),
+            hex_digest(Sha256::digest(&bytes).as_slice())
+        );
+        fs::remove_file(path).unwrap();
     }
 }
