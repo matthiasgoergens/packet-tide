@@ -44,6 +44,7 @@ jobs:
           lab/test-telemetry.sh target/debug/packet-tide
           lab/test-rate-control.sh target/debug/packet-tide
           lab/test-directory.sh target/debug/packet-tide
+          lab/test-reuse.sh target/debug/packet-tide
 
       - name: Validate release and benchmark tooling
         run: |
@@ -53,6 +54,7 @@ jobs:
           bash -n lab/test-telemetry.sh
           bash -n lab/test-rate-control.sh
           bash -n lab/test-directory.sh
+          bash -n lab/test-reuse.sh
           bash -n lab/run-one.sh lab/validate-packet-sizes.sh
           python3 -m py_compile lab/capture-packets.py lab/udp-fault-proxy.py
           python3 -m py_compile lab/two-host/run-matrix.py lab/two-host/evaluate-release.py
