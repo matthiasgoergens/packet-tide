@@ -104,6 +104,10 @@ for field in fields:
 assert sender["schema_version"] == receiver["schema_version"] == 1
 assert sender["udp_payload_bytes"] == receiver["udp_payload_bytes"] == 512
 assert sender["feedback_interval_ms"] == receiver["feedback_interval_ms"] == 200
+assert sender["rate_controller"]["mode"] == "fixed"
+assert sender["rate_controller"]["initial_rate_mbps"] == 10
+assert sender["rate_controller"]["final_rate_mbps"] == 10
+assert sender["rate_controller"]["decisions"] == []
 expected_periodic_reports = sender["elapsed_ms"] / sender["feedback_interval_ms"]
 assert receiver["reports"] >= max(2, expected_periodic_reports * 0.5)
 assert receiver["reports"] <= expected_periodic_reports * 2 + 3
@@ -120,6 +124,8 @@ assert proxy["duplicated"] > 0
 assert retry_sender["datagrams"] == 0
 assert retry_sender["udp_payload_bytes"] == retry_receiver["udp_payload_bytes"] == 512
 assert retry_sender["feedback_interval_ms"] == retry_receiver["feedback_interval_ms"] == 200
+assert retry_sender["rate_controller"]["mode"] == "fixed"
+assert retry_sender["rate_controller"]["final_rate_mbps"] == 50
 assert retry_sender["resumed_chunks"] == expected_chunks
 for field in fields:
     assert retry_sender[f"receiver_{field}"] == retry_receiver[field], f"retry {field}"

@@ -36,6 +36,9 @@ const RESUME_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_QUEUED_REPAIRS: usize = 65_536;
 const MAX_BITMAP_BYTES: usize = 64 * 1024 * 1024;
 const MAX_CHUNKS: u64 = (MAX_BITMAP_BYTES as u64) * 8;
+const DEFAULT_AUTO_MIN_RATE_MBPS: f64 = 10.0;
+const DEFAULT_AUTO_MAX_RATE_MBPS: f64 = 10_000.0;
+const MAX_RATE_DECISIONS: usize = 4_096;
 
 type AnyResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -92,7 +95,9 @@ struct SendArgs {
     udp_target: SocketAddr,
     file: PathBuf,
     transport: Transport,
-    rate_mbps: f64,
+    rate_mbps: Option<f64>,
+    min_rate_mbps: f64,
+    max_rate_mbps: f64,
     repair_cooldown: Duration,
     udp_payload_bytes: usize,
     report_interval: Duration,
@@ -148,6 +153,7 @@ fn usage() {
          [--idle-timeout-ms N]\n  \
          packet-tide send --connect ADDR --udp-target ADDR --file PATH \
          --transport tcp|tcp4|udp --key-file PATH [--rate-mbps N] \
+         [--min-rate-mbps N] [--max-rate-mbps N] \
          [--repair-cooldown-ms N] [--udp-payload-bytes N] \
          [--feedback-interval-ms N] [--idle-timeout-ms N]\n  \
          packet-tide keygen --out PATH"
@@ -203,6 +209,8 @@ fn parse_send(args: Vec<String>) -> AnyResult<SendArgs> {
             "--file",
             "--transport",
             "--rate-mbps",
+            "--min-rate-mbps",
+            "--max-rate-mbps",
             "--repair-cooldown-ms",
             "--udp-payload-bytes",
             "--feedback-interval-ms",
@@ -216,7 +224,13 @@ fn parse_send(args: Vec<String>) -> AnyResult<SendArgs> {
         file: option(&args, "--file")?.into(),
         transport: Transport::parse(&option(&args, "--transport")?)?,
         rate_mbps: optional_option(&args, "--rate-mbps")
-            .unwrap_or_else(|| "100".to_owned())
+            .map(|value| value.parse())
+            .transpose()?,
+        min_rate_mbps: optional_option(&args, "--min-rate-mbps")
+            .unwrap_or_else(|| DEFAULT_AUTO_MIN_RATE_MBPS.to_string())
+            .parse()?,
+        max_rate_mbps: optional_option(&args, "--max-rate-mbps")
+            .unwrap_or_else(|| DEFAULT_AUTO_MAX_RATE_MBPS.to_string())
             .parse()?,
         repair_cooldown: Duration::from_millis(
             optional_option(&args, "--repair-cooldown-ms")
@@ -230,6 +244,24 @@ fn parse_send(args: Vec<String>) -> AnyResult<SendArgs> {
     };
     if parsed.report_interval >= parsed.idle_timeout {
         return Err("--feedback-interval-ms must be shorter than --idle-timeout-ms".into());
+    }
+    if let Some(rate) = parsed.rate_mbps
+        && (!rate.is_finite() || rate <= 0.0)
+    {
+        return Err("--rate-mbps must be positive and finite".into());
+    }
+    if !parsed.min_rate_mbps.is_finite()
+        || !parsed.max_rate_mbps.is_finite()
+        || parsed.min_rate_mbps <= 0.0
+        || parsed.max_rate_mbps < parsed.min_rate_mbps
+    {
+        return Err("automatic rate bounds must be positive, finite, and ordered".into());
+    }
+    if parsed.rate_mbps.is_some()
+        && (optional_option(&args, "--min-rate-mbps").is_some()
+            || optional_option(&args, "--max-rate-mbps").is_some())
+    {
+        return Err("--rate-mbps is a fixed-rate override and cannot be combined with automatic rate bounds".into());
     }
     Ok(parsed)
 }
@@ -359,6 +391,17 @@ fn send(args: SendArgs) -> AnyResult<()> {
         let socket_drops = acceptance_telemetry
             .socket_drops
             .map_or_else(|| "null".to_owned(), |drops| drops.to_string());
+        let rate_controller_json = if args.transport == Transport::Udp {
+            RateController::new(
+                args.rate_mbps,
+                args.min_rate_mbps,
+                args.max_rate_mbps,
+                args.report_interval,
+            )
+            .json()
+        } else {
+            "null".to_owned()
+        };
         println!(
             "{{\"schema_version\":1,\"role\":\"sender\",\"transport\":\"{}\",\"bytes\":{},\
              \"udp_payload_bytes\":{},\"feedback_interval_ms\":{},\"elapsed_ms\":0.0,\
@@ -368,7 +411,7 @@ fn send(args: SendArgs) -> AnyResult<()> {
              \"receiver_accepted_datagrams\":{},\"receiver_valid_datagrams\":{},\
              \"receiver_duplicate_datagrams\":{},\"receiver_invalid_datagrams\":{},\
              \"receiver_repair_datagrams\":{},\"receiver_socket_drops\":{},\
-             \"receiver_reports\":{}}}",
+             \"receiver_reports\":{},\"rate_controller\":{}}}",
             args.transport.display_name(),
             size,
             args.udp_payload_bytes,
@@ -382,38 +425,43 @@ fn send(args: SendArgs) -> AnyResult<()> {
             acceptance_telemetry.invalid_datagrams,
             acceptance_telemetry.repair_datagrams,
             socket_drops,
-            acceptance_telemetry.reports
+            acceptance_telemetry.reports,
+            rate_controller_json,
         );
         return Ok(());
     }
 
     let started = Instant::now();
-    let (datagrams, repairs, udp_ip_bytes_offered, receiver_telemetry) = match args.transport {
-        Transport::Tcp => {
-            send_tcp(&args.file, &mut control)?;
-            expect_completion(&mut control_reader, &mut control_writer)?;
-            (0, 0, 0, ReceiverTelemetry::default())
-        }
-        Transport::Tcp4 => {
-            send_tcp4(&args.file, args.connect, &session_auth, args.idle_timeout)?;
-            expect_completion(&mut control_reader, &mut control_writer)?;
-            (0, 0, 0, ReceiverTelemetry::default())
-        }
-        Transport::Udp => {
-            let config = UdpSendConfig {
-                size,
-                auth: session_auth.clone(),
-                chunks,
-                target: args.udp_target,
-                rate_mbps: args.rate_mbps,
-                repair_cooldown: args.repair_cooldown,
-                payload_bytes: args.udp_payload_bytes,
-                idle_timeout: args.idle_timeout,
-                durable_chunks,
-            };
-            send_udp(&args.file, &config, &mut control_writer, control_reader)?
-        }
-    };
+    let (datagrams, repairs, udp_ip_bytes_offered, receiver_telemetry, rate_controller_json) =
+        match args.transport {
+            Transport::Tcp => {
+                send_tcp(&args.file, &mut control)?;
+                expect_completion(&mut control_reader, &mut control_writer)?;
+                (0, 0, 0, ReceiverTelemetry::default(), "null".to_owned())
+            }
+            Transport::Tcp4 => {
+                send_tcp4(&args.file, args.connect, &session_auth, args.idle_timeout)?;
+                expect_completion(&mut control_reader, &mut control_writer)?;
+                (0, 0, 0, ReceiverTelemetry::default(), "null".to_owned())
+            }
+            Transport::Udp => {
+                let config = UdpSendConfig {
+                    size,
+                    auth: session_auth.clone(),
+                    chunks,
+                    target: args.udp_target,
+                    rate_mbps: args.rate_mbps,
+                    min_rate_mbps: args.min_rate_mbps,
+                    max_rate_mbps: args.max_rate_mbps,
+                    repair_cooldown: args.repair_cooldown,
+                    payload_bytes: args.udp_payload_bytes,
+                    report_interval: args.report_interval,
+                    idle_timeout: args.idle_timeout,
+                    durable_chunks,
+                };
+                send_udp(&args.file, &config, &mut control_writer, control_reader)?
+            }
+        };
 
     let elapsed = started.elapsed();
     let goodput_mbps = if elapsed.is_zero() {
@@ -433,7 +481,7 @@ fn send(args: SendArgs) -> AnyResult<()> {
          \"receiver_accepted_datagrams\":{},\"receiver_valid_datagrams\":{},\
          \"receiver_duplicate_datagrams\":{},\"receiver_invalid_datagrams\":{},\
          \"receiver_repair_datagrams\":{},\"receiver_socket_drops\":{},\
-         \"receiver_reports\":{}}}",
+         \"receiver_reports\":{},\"rate_controller\":{}}}",
         args.transport.display_name(),
         size,
         args.udp_payload_bytes,
@@ -452,7 +500,8 @@ fn send(args: SendArgs) -> AnyResult<()> {
         receiver_telemetry.invalid_datagrams,
         receiver_telemetry.repair_datagrams,
         receiver_socket_drops,
-        receiver_telemetry.reports
+        receiver_telemetry.reports,
+        rate_controller_json,
     );
     Ok(())
 }
@@ -611,11 +660,193 @@ struct UdpSendConfig {
     auth: SessionAuth,
     chunks: u64,
     target: SocketAddr,
-    rate_mbps: f64,
+    rate_mbps: Option<f64>,
+    min_rate_mbps: f64,
+    max_rate_mbps: f64,
     repair_cooldown: Duration,
     payload_bytes: usize,
+    report_interval: Duration,
     idle_timeout: Duration,
     durable_chunks: Vec<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RateDecisionKind {
+    Increase,
+    Decrease,
+    Hold,
+}
+
+#[derive(Clone, Debug)]
+struct RateDecision {
+    elapsed_ms: u128,
+    kind: RateDecisionKind,
+    old_rate_mbps: f64,
+    new_rate_mbps: f64,
+    useful_rate_mbps: f64,
+    waste_ratio: f64,
+    reason: &'static str,
+}
+
+#[derive(Debug)]
+struct RateController {
+    fixed: bool,
+    rate_mbps: f64,
+    min_rate_mbps: f64,
+    max_rate_mbps: f64,
+    decision_interval: Duration,
+    started: Instant,
+    last_decision: Instant,
+    last_telemetry: ReceiverTelemetry,
+    decisions: Vec<RateDecision>,
+    decision_count: u64,
+    increase_count: u64,
+    decrease_count: u64,
+    hold_count: u64,
+}
+
+impl RateController {
+    fn new(
+        fixed_rate_mbps: Option<f64>,
+        min_rate_mbps: f64,
+        max_rate_mbps: f64,
+        report_interval: Duration,
+    ) -> Self {
+        let now = Instant::now();
+        let fixed = fixed_rate_mbps.is_some();
+        let rate_mbps = fixed_rate_mbps.unwrap_or(min_rate_mbps);
+        Self {
+            fixed,
+            rate_mbps,
+            min_rate_mbps: if fixed { rate_mbps } else { min_rate_mbps },
+            max_rate_mbps: if fixed { rate_mbps } else { max_rate_mbps },
+            decision_interval: (report_interval * 4).max(Duration::from_millis(200)),
+            started: now,
+            last_decision: now,
+            last_telemetry: ReceiverTelemetry::default(),
+            decisions: Vec::new(),
+            decision_count: 0,
+            increase_count: 0,
+            decrease_count: 0,
+            hold_count: 0,
+        }
+    }
+
+    fn observe(&mut self, telemetry: &ReceiverTelemetry, now: Instant, payload_bytes: usize) {
+        if self.fixed || now.duration_since(self.last_decision) < self.decision_interval {
+            return;
+        }
+        let elapsed = now.duration_since(self.last_decision).as_secs_f64();
+        let accepted = telemetry
+            .accepted_datagrams
+            .saturating_sub(self.last_telemetry.accepted_datagrams);
+        let valid = telemetry
+            .valid_datagrams
+            .saturating_sub(self.last_telemetry.valid_datagrams);
+        let socket_drops = match (telemetry.socket_drops, self.last_telemetry.socket_drops) {
+            (Some(current), Some(previous)) => current.saturating_sub(previous),
+            (Some(current), None) => current,
+            _ => 0,
+        };
+        let duplicates = valid.saturating_sub(accepted);
+        let useful_rate_mbps = accepted as f64 * payload_bytes as f64 * 8.0 / elapsed / 1_000_000.0;
+        let waste_ratio = if valid == 0 {
+            0.0
+        } else {
+            (duplicates.saturating_add(socket_drops)) as f64 / valid as f64
+        };
+        let old_rate = self.rate_mbps;
+        let (candidate, reason) = if accepted == 0 {
+            (old_rate * 0.7, "stalled_progress")
+        } else if waste_ratio > 0.03 || socket_drops > 0 {
+            (old_rate * 0.7, "receiver_waste")
+        } else if useful_rate_mbps >= old_rate * 0.8 {
+            (
+                (old_rate * 1.25).max(old_rate + 1.0),
+                "useful_throughput_followed_load",
+            )
+        } else if useful_rate_mbps < old_rate * 0.5 {
+            (old_rate * 0.85, "throughput_fell_behind_load")
+        } else {
+            (old_rate, "insufficient_signal")
+        };
+        self.rate_mbps = candidate.clamp(self.min_rate_mbps, self.max_rate_mbps);
+        let effective_kind = if self.rate_mbps > old_rate {
+            RateDecisionKind::Increase
+        } else if self.rate_mbps < old_rate {
+            RateDecisionKind::Decrease
+        } else {
+            RateDecisionKind::Hold
+        };
+        self.decision_count = self.decision_count.saturating_add(1);
+        match effective_kind {
+            RateDecisionKind::Increase => {
+                self.increase_count = self.increase_count.saturating_add(1)
+            }
+            RateDecisionKind::Decrease => {
+                self.decrease_count = self.decrease_count.saturating_add(1)
+            }
+            RateDecisionKind::Hold => self.hold_count = self.hold_count.saturating_add(1),
+        }
+        let decision = RateDecision {
+            elapsed_ms: now.duration_since(self.started).as_millis(),
+            kind: effective_kind,
+            old_rate_mbps: old_rate,
+            new_rate_mbps: self.rate_mbps,
+            useful_rate_mbps,
+            waste_ratio,
+            reason,
+        };
+        if self.decisions.len() < MAX_RATE_DECISIONS {
+            self.decisions.push(decision);
+        }
+        self.last_decision = now;
+        self.last_telemetry = telemetry.clone();
+    }
+
+    fn json(&self) -> String {
+        let mode = if self.fixed { "fixed" } else { "auto" };
+        let decisions = self
+            .decisions
+            .iter()
+            .map(|decision| {
+                let kind = match decision.kind {
+                    RateDecisionKind::Increase => "increase",
+                    RateDecisionKind::Decrease => "decrease",
+                    RateDecisionKind::Hold => "hold",
+                };
+                format!(
+                    "{{\"elapsed_ms\":{},\"decision\":\"{}\",\"old_rate_mbps\":{:.6},\"new_rate_mbps\":{:.6},\"useful_rate_mbps\":{:.6},\"waste_ratio\":{:.6},\"reason\":\"{}\"}}",
+                    decision.elapsed_ms,
+                    kind,
+                    decision.old_rate_mbps,
+                    decision.new_rate_mbps,
+                    decision.useful_rate_mbps,
+                    decision.waste_ratio,
+                    decision.reason,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            "{{\"mode\":\"{mode}\",\"initial_rate_mbps\":{:.6},\"final_rate_mbps\":{:.6},\"minimum_rate_mbps\":{:.6},\"maximum_rate_mbps\":{:.6},\"decision_count\":{},\"increase_count\":{},\"decrease_count\":{},\"hold_count\":{},\"omitted_decision_count\":{},\"decisions\":[{}]}}",
+            if self.fixed {
+                self.rate_mbps
+            } else {
+                self.min_rate_mbps
+            },
+            self.rate_mbps,
+            self.min_rate_mbps,
+            self.max_rate_mbps,
+            self.decision_count,
+            self.increase_count,
+            self.decrease_count,
+            self.hold_count,
+            self.decision_count
+                .saturating_sub(self.decisions.len() as u64),
+            decisions,
+        )
+    }
 }
 
 fn send_udp(
@@ -623,7 +854,7 @@ fn send_udp(
     config: &UdpSendConfig,
     control: &mut ControlWriter,
     control_reader: ControlReader,
-) -> AnyResult<(u64, u64, u64, ReceiverTelemetry)> {
+) -> AnyResult<(u64, u64, u64, ReceiverTelemetry, String)> {
     let result = send_udp_inner(path, config, control, control_reader);
     if result.is_err() {
         let _ = control.send("CANCEL sender-error");
@@ -636,11 +867,7 @@ fn send_udp_inner(
     config: &UdpSendConfig,
     control: &mut ControlWriter,
     control_reader: ControlReader,
-) -> AnyResult<(u64, u64, u64, ReceiverTelemetry)> {
-    if !config.rate_mbps.is_finite() || config.rate_mbps <= 0.0 {
-        return Err("--rate-mbps must be positive and finite".into());
-    }
-
+) -> AnyResult<(u64, u64, u64, ReceiverTelemetry, String)> {
     let socket = UdpSocket::bind(if config.target.is_ipv4() {
         "0.0.0.0:0"
     } else {
@@ -652,19 +879,30 @@ fn send_udp_inner(
     let complete = Arc::new(AtomicBool::new(false));
     let feedback_error = Arc::new(Mutex::new(None::<String>));
     let receiver_telemetry = Arc::new(Mutex::new(ReceiverTelemetry::default()));
+    let rate_controller = Arc::new(Mutex::new(RateController::new(
+        config.rate_mbps,
+        config.min_rate_mbps,
+        config.max_rate_mbps,
+        config.report_interval,
+    )));
+    let adaptive = config.rate_mbps.is_none();
 
     let pending_for_reader = Arc::clone(&pending);
     let complete_for_reader = Arc::clone(&complete);
     let error_for_reader = Arc::clone(&feedback_error);
     let telemetry_for_reader = Arc::clone(&receiver_telemetry);
+    let controller_for_reader = adaptive.then(|| Arc::clone(&rate_controller));
     let chunks_for_reader = config.chunks;
+    let payload_bytes_for_reader = config.payload_bytes;
     let feedback_thread = thread::spawn(move || {
         if let Err(error) = read_feedback(
             control_reader,
             pending_for_reader,
             complete_for_reader,
             telemetry_for_reader,
+            controller_for_reader,
             chunks_for_reader,
+            payload_bytes_for_reader,
         ) {
             *error_for_reader
                 .lock()
@@ -672,7 +910,14 @@ fn send_udp_inner(
         }
     });
 
-    let mut pacer = Pacer::new(config.rate_mbps * 1_000_000.0 / 8.0);
+    let mut pacer = Pacer::new(
+        rate_controller
+            .lock()
+            .expect("rate controller mutex poisoned")
+            .rate_mbps
+            * 1_000_000.0
+            / 8.0,
+    );
     let mut packet = vec![0_u8; HEADER_SIZE + config.payload_bytes];
     let mut datagrams = 0_u64;
     let mut repairs = 0_u64;
@@ -698,7 +943,7 @@ fn send_udp_inner(
         socket.send(&packet[..packet_len])?;
         datagrams += 1;
         udp_ip_bytes_offered += packet_len as u64 + 28;
-        pacer.account_and_wait(packet_len + 28);
+        pace_with_controller(&mut pacer, &rate_controller, adaptive, packet_len + 28);
 
         if sequence % 16 == 15 {
             for repair in take_repairs(&pending, 4) {
@@ -715,7 +960,7 @@ fn send_udp_inner(
                 datagrams += 1;
                 repairs += 1;
                 udp_ip_bytes_offered += packet_len as u64 + 28;
-                pacer.account_and_wait(packet_len + 28);
+                pace_with_controller(&mut pacer, &rate_controller, adaptive, packet_len + 28);
             }
         }
     }
@@ -745,7 +990,7 @@ fn send_udp_inner(
             datagrams += 1;
             repairs += 1;
             udp_ip_bytes_offered += packet_len as u64 + 28;
-            pacer.account_and_wait(packet_len + 28);
+            pace_with_controller(&mut pacer, &rate_controller, adaptive, packet_len + 28);
         }
     }
 
@@ -757,7 +1002,33 @@ fn send_udp_inner(
         .lock()
         .expect("receiver telemetry mutex poisoned")
         .clone();
-    Ok((datagrams, repairs, udp_ip_bytes_offered, receiver_telemetry))
+    let controller_json = rate_controller
+        .lock()
+        .expect("rate controller mutex poisoned")
+        .json();
+    Ok((
+        datagrams,
+        repairs,
+        udp_ip_bytes_offered,
+        receiver_telemetry,
+        controller_json,
+    ))
+}
+
+fn pace_with_controller(
+    pacer: &mut Pacer,
+    controller: &Arc<Mutex<RateController>>,
+    adaptive: bool,
+    bytes: usize,
+) {
+    if adaptive {
+        let rate_mbps = controller
+            .lock()
+            .expect("rate controller mutex poisoned")
+            .rate_mbps;
+        pacer.set_bytes_per_second(rate_mbps * 1_000_000.0 / 8.0);
+    }
+    pacer.account_and_wait(bytes);
 }
 
 fn check_feedback_error(feedback_error: &Mutex<Option<String>>) -> AnyResult<()> {
@@ -806,7 +1077,9 @@ fn read_feedback(
     pending: Arc<Mutex<RepairQueue>>,
     complete: Arc<AtomicBool>,
     telemetry: Arc<Mutex<ReceiverTelemetry>>,
+    controller: Option<Arc<Mutex<RateController>>>,
     chunks: u64,
+    payload_bytes: usize,
 ) -> AnyResult<()> {
     loop {
         let line = reader
@@ -818,6 +1091,12 @@ fn read_feedback(
         }
         if line.starts_with("M ") {
             let (mut snapshot, ranges) = parse_feedback_report(&line, chunks)?;
+            if let Some(controller) = &controller {
+                controller
+                    .lock()
+                    .expect("rate controller mutex poisoned")
+                    .observe(&snapshot, Instant::now(), payload_bytes);
+            }
             let mut current = telemetry.lock().expect("receiver telemetry mutex poisoned");
             snapshot.reports = current.reports.saturating_add(1);
             *current = snapshot;
@@ -1006,6 +1285,17 @@ impl Pacer {
             bytes_since_wait: 0,
             batch_bytes,
         }
+    }
+
+    fn set_bytes_per_second(&mut self, bytes_per_second: f64) {
+        if self.bytes_per_second == bytes_per_second {
+            return;
+        }
+        self.bytes_per_second = bytes_per_second;
+        self.started = Instant::now();
+        self.bytes_sent = 0;
+        self.bytes_since_wait = 0;
+        self.batch_bytes = (bytes_per_second * 0.002).clamp(1_200.0, 65_536.0) as usize;
     }
 
     fn account_and_wait(&mut self, bytes: usize) {
@@ -2125,6 +2415,163 @@ mod tests {
         assert_eq!(Pacer::new(12_500_000.0).batch_bytes, 25_000);
         assert_eq!(Pacer::new(1.0).batch_bytes, 1_200);
         assert_eq!(Pacer::new(1_000_000_000.0).batch_bytes, 65_536);
+    }
+
+    fn controller_step(
+        controller: &mut RateController,
+        telemetry: &mut ReceiverTelemetry,
+        step: u32,
+        capacity_mbps: f64,
+    ) {
+        let interval = 0.2;
+        let payload_bytes = DEFAULT_UDP_PAYLOAD_BYTES;
+        let offered =
+            (controller.rate_mbps * 1_000_000.0 * interval / (payload_bytes as f64 * 8.0)) as u64;
+        let accepted = (controller.rate_mbps.min(capacity_mbps) * 1_000_000.0 * interval
+            / (payload_bytes as f64 * 8.0)) as u64;
+        telemetry.received_chunks += accepted;
+        telemetry.accepted_datagrams += accepted;
+        telemetry.valid_datagrams += accepted;
+        let dropped = offered.saturating_sub(accepted);
+        telemetry.socket_drops = Some(telemetry.socket_drops.unwrap_or(0) + dropped);
+        controller.observe(
+            telemetry,
+            controller.started + Duration::from_millis(u64::from(step) * 200),
+            payload_bytes,
+        );
+    }
+
+    #[test]
+    fn automatic_rate_converges_and_tracks_a_capacity_drop() {
+        let mut controller = RateController::new(None, 10.0, 200.0, Duration::from_millis(50));
+        let mut telemetry = ReceiverTelemetry {
+            socket_drops: Some(0),
+            ..ReceiverTelemetry::default()
+        };
+        for step in 1..=14 {
+            controller_step(&mut controller, &mut telemetry, step, 80.0);
+        }
+        assert!(controller.rate_mbps >= 40.0, "{}", controller.rate_mbps);
+        for step in 15..=24 {
+            controller_step(&mut controller, &mut telemetry, step, 20.0);
+        }
+        assert!(
+            (10.0..=35.0).contains(&controller.rate_mbps),
+            "{}",
+            controller.rate_mbps
+        );
+        assert!(
+            controller
+                .decisions
+                .iter()
+                .any(|decision| decision.kind == RateDecisionKind::Increase)
+        );
+        assert!(
+            controller
+                .decisions
+                .iter()
+                .any(|decision| decision.kind == RateDecisionKind::Decrease)
+        );
+    }
+
+    #[test]
+    fn receiver_waste_causes_backoff_without_collapse() {
+        let mut controller = RateController::new(None, 10.0, 100.0, Duration::from_millis(50));
+        controller.rate_mbps = 50.0;
+        let mut telemetry = ReceiverTelemetry {
+            received_chunks: 100,
+            accepted_datagrams: 100,
+            valid_datagrams: 100,
+            socket_drops: Some(10),
+            ..ReceiverTelemetry::default()
+        };
+        controller.observe(
+            &telemetry,
+            controller.started + Duration::from_millis(200),
+            DEFAULT_UDP_PAYLOAD_BYTES,
+        );
+        assert_eq!(controller.rate_mbps, 35.0);
+        telemetry.socket_drops = Some(1_000);
+        for step in 2..=20 {
+            controller.observe(
+                &telemetry,
+                controller.started + Duration::from_millis(step as u64 * 200),
+                DEFAULT_UDP_PAYLOAD_BYTES,
+            );
+        }
+        assert_eq!(controller.rate_mbps, 10.0);
+    }
+
+    #[test]
+    fn fixed_rate_controller_never_changes_or_records_decisions() {
+        let mut controller =
+            RateController::new(Some(123.0), 10.0, 1_000.0, Duration::from_millis(50));
+        let telemetry = ReceiverTelemetry {
+            socket_drops: Some(1_000),
+            ..ReceiverTelemetry::default()
+        };
+        controller.observe(
+            &telemetry,
+            controller.started + Duration::from_secs(10),
+            DEFAULT_UDP_PAYLOAD_BYTES,
+        );
+        assert_eq!(controller.rate_mbps, 123.0);
+        assert!(controller.decisions.is_empty());
+        assert!(controller.json().contains("\"mode\":\"fixed\""));
+    }
+
+    #[test]
+    fn rate_decision_history_is_bounded_but_counts_every_decision() {
+        let mut controller = RateController::new(None, 10.0, 100.0, Duration::from_millis(50));
+        let telemetry = ReceiverTelemetry::default();
+        for step in 1..=(MAX_RATE_DECISIONS as u64 + 10) {
+            controller.observe(
+                &telemetry,
+                controller.started + Duration::from_millis(step * 200),
+                DEFAULT_UDP_PAYLOAD_BYTES,
+            );
+        }
+        assert_eq!(controller.decisions.len(), MAX_RATE_DECISIONS);
+        assert_eq!(controller.decision_count, MAX_RATE_DECISIONS as u64 + 10);
+        assert_eq!(controller.hold_count, controller.decision_count);
+        assert!(controller.json().contains("\"omitted_decision_count\":10"));
+    }
+
+    fn minimal_send_args(extra: &[&str]) -> Vec<String> {
+        let mut args = vec![
+            "--connect",
+            "127.0.0.1:9000",
+            "--udp-target",
+            "127.0.0.1:9001",
+            "--file",
+            "/tmp/source",
+            "--transport",
+            "udp",
+            "--key-file",
+            "/tmp/key",
+        ];
+        args.extend_from_slice(extra);
+        args.into_iter().map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn automatic_rate_is_default_and_fixed_rate_rejects_auto_bounds() {
+        let automatic = parse_send(minimal_send_args(&[])).unwrap();
+        assert_eq!(automatic.rate_mbps, None);
+        assert_eq!(automatic.min_rate_mbps, DEFAULT_AUTO_MIN_RATE_MBPS);
+        assert_eq!(automatic.max_rate_mbps, DEFAULT_AUTO_MAX_RATE_MBPS);
+
+        let fixed = parse_send(minimal_send_args(&["--rate-mbps", "123"])).unwrap();
+        assert_eq!(fixed.rate_mbps, Some(123.0));
+        assert!(
+            parse_send(minimal_send_args(&[
+                "--rate-mbps",
+                "123",
+                "--max-rate-mbps",
+                "500",
+            ]))
+            .is_err()
+        );
     }
 
     #[test]

@@ -48,6 +48,7 @@ jobs:
           bash -n lab/test-liveness.sh
           bash -n lab/test-resume.sh
           bash -n lab/test-telemetry.sh
+          bash -n lab/test-rate-control.sh
           bash -n lab/run-one.sh lab/validate-packet-sizes.sh
           python3 -m py_compile lab/capture-packets.py lab/udp-fault-proxy.py
           python3 -m py_compile lab/two-host/run-matrix.py lab/two-host/evaluate-release.py
