@@ -14,6 +14,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 mod auth;
+mod directory;
 mod resume;
 
 use auth::{ControlReader, ControlWriter, Direction, SecretKey, SessionAuth};
@@ -132,6 +133,11 @@ fn run() -> AnyResult<()> {
             SecretKey::generate(Path::new(&option(&args, "--out")?))?;
             Ok(())
         }
+        Some("manifest") => {
+            let args: Vec<_> = args.collect();
+            validate_options(&args, &["--root"])?;
+            directory::print(Path::new(&option(&args, "--root")?))
+        }
         Some("--help" | "-h" | "help") => {
             usage();
             Ok(())
@@ -142,7 +148,7 @@ fn run() -> AnyResult<()> {
         }
         _ => {
             usage();
-            Err("expected send, receive, or keygen subcommand".into())
+            Err("expected send, receive, manifest, or keygen subcommand".into())
         }
     }
 }
@@ -156,6 +162,7 @@ fn usage() {
          [--min-rate-mbps N] [--max-rate-mbps N] \
          [--repair-cooldown-ms N] [--udp-payload-bytes N] \
          [--feedback-interval-ms N] [--idle-timeout-ms N]\n  \
+         packet-tide manifest --root PATH\n  \
          packet-tide keygen --out PATH"
     );
 }
