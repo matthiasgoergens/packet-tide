@@ -22,6 +22,9 @@ const DATAGRAM_SIZE: usize = 1200;
 const HEADER_SIZE: usize = 28;
 const PAYLOAD_SIZE: usize = DATAGRAM_SIZE - HEADER_SIZE;
 const REPORT_INTERVAL: Duration = Duration::from_millis(50);
+const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+const MIN_IDLE_TIMEOUT: Duration = Duration::from_millis(500);
+const MAX_IDLE_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const MAX_RANGES_PER_REPORT: usize = 512;
 const TCP4_LANES: usize = 4;
 const RESUME_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(1);
@@ -73,6 +76,7 @@ struct SendArgs {
     transport: Transport,
     rate_mbps: f64,
     repair_cooldown: Duration,
+    idle_timeout: Duration,
     key_file: PathBuf,
 }
 
@@ -81,6 +85,7 @@ struct ReceiveArgs {
     listen: SocketAddr,
     udp: SocketAddr,
     out: PathBuf,
+    idle_timeout: Duration,
     key_file: PathBuf,
 }
 
@@ -119,9 +124,11 @@ fn run() -> AnyResult<()> {
 
 fn usage() {
     eprintln!(
-        "usage:\n  tsunami-udp receive --listen ADDR --udp ADDR --out PATH --key-file PATH\n  \
+        "usage:\n  tsunami-udp receive --listen ADDR --udp ADDR --out PATH --key-file PATH \
+         [--idle-timeout-ms N]\n  \
          tsunami-udp send --connect ADDR --udp-target ADDR --file PATH \
-         --transport tcp|tcp4|udp --key-file PATH [--rate-mbps N] [--repair-cooldown-ms N]\n  \
+         --transport tcp|tcp4|udp --key-file PATH [--rate-mbps N] \
+         [--repair-cooldown-ms N] [--idle-timeout-ms N]\n  \
          tsunami-udp keygen --out PATH"
     );
 }
@@ -176,6 +183,7 @@ fn parse_send(args: Vec<String>) -> AnyResult<SendArgs> {
             "--transport",
             "--rate-mbps",
             "--repair-cooldown-ms",
+            "--idle-timeout-ms",
             "--key-file",
         ],
     )?;
@@ -192,18 +200,46 @@ fn parse_send(args: Vec<String>) -> AnyResult<SendArgs> {
                 .unwrap_or_else(|| "250".to_owned())
                 .parse()?,
         ),
+        idle_timeout: parse_idle_timeout(&args)?,
         key_file: option(&args, "--key-file")?.into(),
     })
 }
 
 fn parse_receive(args: Vec<String>) -> AnyResult<ReceiveArgs> {
-    validate_options(&args, &["--listen", "--udp", "--out", "--key-file"])?;
+    validate_options(
+        &args,
+        &[
+            "--listen",
+            "--udp",
+            "--out",
+            "--key-file",
+            "--idle-timeout-ms",
+        ],
+    )?;
     Ok(ReceiveArgs {
         listen: resolve_socket(&option(&args, "--listen")?)?,
         udp: resolve_socket(&option(&args, "--udp")?)?,
         out: option(&args, "--out")?.into(),
+        idle_timeout: parse_idle_timeout(&args)?,
         key_file: option(&args, "--key-file")?.into(),
     })
+}
+
+fn parse_idle_timeout(args: &[String]) -> AnyResult<Duration> {
+    let timeout = Duration::from_millis(
+        optional_option(args, "--idle-timeout-ms")
+            .unwrap_or_else(|| DEFAULT_IDLE_TIMEOUT.as_millis().to_string())
+            .parse()?,
+    );
+    if !(MIN_IDLE_TIMEOUT..=MAX_IDLE_TIMEOUT).contains(&timeout) {
+        return Err(format!(
+            "--idle-timeout-ms must be between {} and {}",
+            MIN_IDLE_TIMEOUT.as_millis(),
+            MAX_IDLE_TIMEOUT.as_millis()
+        )
+        .into());
+    }
+    Ok(timeout)
 }
 
 fn send(args: SendArgs) -> AnyResult<()> {
@@ -221,6 +257,8 @@ fn send(args: SendArgs) -> AnyResult<()> {
 
     let mut control = TcpStream::connect(args.connect)?;
     control.set_nodelay(true)?;
+    control.set_read_timeout(Some(args.idle_timeout))?;
+    control.set_write_timeout(Some(args.idle_timeout))?;
     let hello = format!(
         "{} {} {} {} {} {}",
         args.transport.wire_name(),
@@ -249,6 +287,7 @@ fn send(args: SendArgs) -> AnyResult<()> {
         .map(|word| word.count_ones() as u64)
         .sum::<u64>();
     if already_complete {
+        control_writer.send("COMPLETE_ACK")?;
         println!(
             "{{\"transport\":\"{}\",\"bytes\":{},\"elapsed_ms\":0.0,\
              \"goodput_mbps\":0.0,\"datagrams\":0,\"repairs\":0,\
@@ -264,12 +303,12 @@ fn send(args: SendArgs) -> AnyResult<()> {
     let (datagrams, repairs, udp_ip_bytes_offered) = match args.transport {
         Transport::Tcp => {
             send_tcp(&args.file, &mut control)?;
-            expect_completion(&mut control_reader)?;
+            expect_completion(&mut control_reader, &mut control_writer)?;
             (0, 0, 0)
         }
         Transport::Tcp4 => {
-            send_tcp4(&args.file, args.connect, &session_auth)?;
-            expect_completion(&mut control_reader)?;
+            send_tcp4(&args.file, args.connect, &session_auth, args.idle_timeout)?;
+            expect_completion(&mut control_reader, &mut control_writer)?;
             (0, 0, 0)
         }
         Transport::Udp => {
@@ -280,6 +319,7 @@ fn send(args: SendArgs) -> AnyResult<()> {
                 target: args.udp_target,
                 rate_mbps: args.rate_mbps,
                 repair_cooldown: args.repair_cooldown,
+                idle_timeout: args.idle_timeout,
                 durable_chunks,
             };
             send_udp(&args.file, &config, &mut control_writer, control_reader)?
@@ -308,11 +348,12 @@ fn send(args: SendArgs) -> AnyResult<()> {
     Ok(())
 }
 
-fn expect_completion(control: &mut ControlReader) -> AnyResult<()> {
-    let completion = control.recv()?;
+fn expect_completion(reader: &mut ControlReader, writer: &mut ControlWriter) -> AnyResult<()> {
+    let completion = reader.recv()?;
     if completion != "COMPLETE" {
         return Err(format!("transfer did not complete: {completion}").into());
     }
+    writer.send("COMPLETE_ACK")?;
     Ok(())
 }
 
@@ -376,16 +417,22 @@ fn send_tcp(path: &Path, control: &mut TcpStream) -> AnyResult<()> {
     Ok(())
 }
 
-fn send_tcp4(path: &Path, connect: SocketAddr, auth: &SessionAuth) -> AnyResult<()> {
+fn send_tcp4(
+    path: &Path,
+    connect: SocketAddr,
+    auth: &SessionAuth,
+    idle_timeout: Duration,
+) -> AnyResult<()> {
     let size = fs::metadata(path)?.len();
     let mut lanes = Vec::with_capacity(TCP4_LANES);
     for lane in 0..TCP4_LANES {
-        let mut stream = TcpStream::connect(connect)?;
+        let mut stream = TcpStream::connect_timeout(&connect, idle_timeout)?;
         stream.set_nodelay(true)?;
+        stream.set_write_timeout(Some(idle_timeout))?;
         let mac = auth::lane_mac(&auth.lane, &auth.session, lane);
         writeln!(
             stream,
-            "TSU2D {} {lane} {}",
+            "TSU3D {} {lane} {}",
             auth::hex(&auth.session),
             auth::hex(&mac)
         )?;
@@ -441,10 +488,24 @@ struct UdpSendConfig {
     target: SocketAddr,
     rate_mbps: f64,
     repair_cooldown: Duration,
+    idle_timeout: Duration,
     durable_chunks: Vec<u64>,
 }
 
 fn send_udp(
+    path: &Path,
+    config: &UdpSendConfig,
+    control: &mut ControlWriter,
+    control_reader: ControlReader,
+) -> AnyResult<(u64, u64, u64)> {
+    let result = send_udp_inner(path, config, control, control_reader);
+    if result.is_err() {
+        let _ = control.send("CANCEL sender-error");
+    }
+    result
+}
+
+fn send_udp_inner(
     path: &Path,
     config: &UdpSendConfig,
     control: &mut ControlWriter,
@@ -487,8 +548,12 @@ fn send_udp(
     let mut datagrams = 0_u64;
     let mut repairs = 0_u64;
     let mut udp_ip_bytes_offered = 0_u64;
+    let heartbeat_interval = (config.idle_timeout / 3).min(Duration::from_secs(1));
+    let mut last_heartbeat = Instant::now();
 
     for sequence in 0..config.chunks {
+        check_feedback_error(&feedback_error)?;
+        send_heartbeat_if_due(control, &mut last_heartbeat, heartbeat_interval)?;
         if bitmap_contains(&config.durable_chunks, sequence) {
             continue;
         }
@@ -521,13 +586,8 @@ fn send_udp(
     control.send("END")?;
 
     while !complete.load(Ordering::Acquire) {
-        if let Some(error) = feedback_error
-            .lock()
-            .expect("feedback error mutex poisoned")
-            .clone()
-        {
-            return Err(error.into());
-        }
+        check_feedback_error(&feedback_error)?;
+        send_heartbeat_if_due(control, &mut last_heartbeat, heartbeat_interval)?;
 
         let repairs_now = take_repairs(&pending, 1024);
         if repairs_now.is_empty() {
@@ -548,7 +608,31 @@ fn send_udp(
     feedback_thread
         .join()
         .map_err(|_| "feedback thread panicked")?;
+    control.send("COMPLETE_ACK")?;
     Ok((datagrams, repairs, udp_ip_bytes_offered))
+}
+
+fn check_feedback_error(feedback_error: &Mutex<Option<String>>) -> AnyResult<()> {
+    if let Some(error) = feedback_error
+        .lock()
+        .expect("feedback error mutex poisoned")
+        .clone()
+    {
+        return Err(error.into());
+    }
+    Ok(())
+}
+
+fn send_heartbeat_if_due(
+    control: &mut ControlWriter,
+    last_heartbeat: &mut Instant,
+    interval: Duration,
+) -> AnyResult<()> {
+    if last_heartbeat.elapsed() >= interval {
+        control.send("PING")?;
+        *last_heartbeat = Instant::now();
+    }
+    Ok(())
 }
 
 struct RepairQueue {
@@ -576,7 +660,9 @@ fn read_feedback(
     chunks: u64,
 ) -> AnyResult<()> {
     loop {
-        let line = reader.recv()?;
+        let line = reader
+            .recv()
+            .map_err(|error| format!("receiver feedback stopped: {error}"))?;
         if line == "COMPLETE" {
             complete.store(true, Ordering::Release);
             return Ok(());
@@ -589,8 +675,14 @@ fn read_feedback(
                 .last_sent
                 .retain(|_, sent_at| now.duration_since(*sent_at) < cooldown);
             enqueue_repairs(&mut queue, ranges, chunks)?;
+        } else if let Some(message) = line.strip_prefix("CANCEL ") {
+            return Err(format!("receiver cancelled transfer: {message}").into());
         } else if let Some(message) = line.strip_prefix("ERROR ") {
             return Err(format!("receiver error: {message}").into());
+        } else if line == "PONG" {
+            continue;
+        } else {
+            return Err(format!("unexpected receiver feedback: {line}").into());
         }
     }
 }
@@ -661,7 +753,7 @@ fn build_packet(
         return Err(format!("sequence {sequence} is outside the file").into());
     }
     let payload_len = (size.saturating_sub(offset)).min(PAYLOAD_SIZE as u64) as usize;
-    packet[0] = 2;
+    packet[0] = 3;
     packet[1..9].copy_from_slice(&sequence.to_be_bytes());
     packet[9] = u8::from(repair);
     packet[10..12].copy_from_slice(&(payload_len as u16).to_be_bytes());
@@ -731,6 +823,8 @@ fn receive(args: ReceiveArgs) -> AnyResult<()> {
     let listener = TcpListener::bind(args.listen)?;
     let (mut control, peer) = listener.accept()?;
     control.set_nodelay(true)?;
+    control.set_read_timeout(Some(args.idle_timeout))?;
+    control.set_write_timeout(Some(args.idle_timeout))?;
     let (hello_body, session_auth) = auth::server_handshake(&mut control, &key)?;
     let mut hello = parse_hello(&hello_body)?;
     hello.session = session_auth.session;
@@ -755,6 +849,7 @@ fn receive(args: ReceiveArgs) -> AnyResult<()> {
             receive_tcp(
                 &mut control,
                 &mut control_writer,
+                control_reader,
                 &temporary,
                 &args.out,
                 &hello,
@@ -765,19 +860,21 @@ fn receive(args: ReceiveArgs) -> AnyResult<()> {
             receive_tcp4(
                 &listener,
                 &mut control_writer,
-                &temporary,
-                &args.out,
+                control_reader,
+                (&temporary, &args.out),
                 &hello,
                 &session_auth,
+                args.idle_timeout,
             )
         }
         Transport::Udp => receive_udp(
-            control_writer,
+            &mut control_writer,
             control_reader,
             udp,
             &args.out,
             &hello,
             &session_auth,
+            args.idle_timeout,
         ),
     };
     if let Err(error) = &result {
@@ -801,7 +898,7 @@ struct Hello {
 fn parse_hello(line: &str) -> AnyResult<Hello> {
     let parts: Vec<_> = line.split_whitespace().collect();
     if parts.len() != 6 {
-        return Err("invalid authenticated TSU2 greeting body".into());
+        return Err("invalid authenticated TSU3 greeting body".into());
     }
     let transport = match parts[0] {
         "TCP" => Transport::Tcp,
@@ -834,6 +931,7 @@ fn parse_hello(line: &str) -> AnyResult<Hello> {
 fn receive_tcp(
     control: &mut TcpStream,
     control_writer: &mut ControlWriter,
+    mut control_reader: ControlReader,
     temporary: &Path,
     destination: &Path,
     hello: &Hello,
@@ -859,18 +957,20 @@ fn receive_tcp(
         return Err("received TCP file hash did not match".into());
     }
     install_file(temporary, destination)?;
-    control_writer.send("COMPLETE")?;
+    send_completion_and_wait(control_writer, &mut control_reader)?;
     Ok(())
 }
 
 fn receive_tcp4(
     listener: &TcpListener,
     control: &mut ControlWriter,
-    temporary: &Path,
-    destination: &Path,
+    mut control_reader: ControlReader,
+    paths: (&Path, &Path),
     hello: &Hello,
     session_auth: &SessionAuth,
+    idle_timeout: Duration,
 ) -> AnyResult<()> {
+    let (temporary, destination) = paths;
     let file = OpenOptions::new()
         .create(true)
         .truncate(true)
@@ -880,14 +980,28 @@ fn receive_tcp4(
     file.set_len(hello.size)?;
 
     let mut lanes: Vec<Option<TcpStream>> = (0..TCP4_LANES).map(|_| None).collect();
-    for _ in 0..TCP4_LANES {
-        let (mut stream, _) = listener.accept()?;
-        stream.set_nodelay(true)?;
-        let lane = read_tcp4_hello(&mut stream, session_auth)?;
-        if lane >= TCP4_LANES || lanes[lane].is_some() {
-            return Err("invalid or duplicate TCP4 data connection".into());
+    listener.set_nonblocking(true)?;
+    let mut accept_deadline = Instant::now() + idle_timeout;
+    while lanes.iter().any(Option::is_none) {
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                stream.set_nodelay(true)?;
+                stream.set_read_timeout(Some(idle_timeout))?;
+                let lane = read_tcp4_hello(&mut stream, session_auth)?;
+                if lane >= TCP4_LANES || lanes[lane].is_some() {
+                    return Err("invalid or duplicate TCP4 data connection".into());
+                }
+                lanes[lane] = Some(stream);
+                accept_deadline = Instant::now() + idle_timeout;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() >= accept_deadline {
+                    return Err("timed out waiting for TCP4 data connections".into());
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err(error.into()),
         }
-        lanes[lane] = Some(stream);
     }
 
     let mut workers = Vec::with_capacity(TCP4_LANES);
@@ -912,7 +1026,19 @@ fn receive_tcp4(
         return Err("received TCP4 file hash did not match".into());
     }
     install_file(temporary, destination)?;
+    send_completion_and_wait(control, &mut control_reader)?;
+    Ok(())
+}
+
+fn send_completion_and_wait(
+    control: &mut ControlWriter,
+    reader: &mut ControlReader,
+) -> AnyResult<()> {
     control.send("COMPLETE")?;
+    let acknowledgement = reader.recv()?;
+    if acknowledgement != "COMPLETE_ACK" {
+        return Err(format!("expected completion acknowledgement, got {acknowledgement}").into());
+    }
     Ok(())
 }
 
@@ -933,7 +1059,7 @@ fn read_tcp4_hello(stream: &mut TcpStream, session_auth: &SessionAuth) -> AnyRes
     }
     let greeting = std::str::from_utf8(&greeting)?;
     let parts: Vec<_> = greeting.split_whitespace().collect();
-    if parts.len() != 4 || parts[0] != "TSU2D" {
+    if parts.len() != 4 || parts[0] != "TSU3D" {
         return Err("invalid TCP4 data greeting".into());
     }
     let session = auth::decode_array::<16>(parts[1])?;
@@ -965,19 +1091,20 @@ fn receive_tcp4_range(mut stream: TcpStream, file: File, start: u64, end: u64) -
 }
 
 fn receive_udp(
-    mut control: ControlWriter,
-    control_reader: ControlReader,
+    control: &mut ControlWriter,
+    mut control_reader: ControlReader,
     udp: UdpSocket,
     destination: &Path,
     hello: &Hello,
     session_auth: &SessionAuth,
+    idle_timeout: Duration,
 ) -> AnyResult<()> {
     if destination
         .metadata()
         .is_ok_and(|metadata| metadata.len() == hello.size)
         && hash_file(destination)? == hello.hash
     {
-        control.send("COMPLETE")?;
+        send_completion_and_wait(control, &mut control_reader)?;
         return Ok(());
     }
 
@@ -1019,13 +1146,27 @@ fn receive_udp(
                 Ok(line) if line == "END" => {
                     let _ = control_tx.send(ControlEvent::End);
                 }
+                Ok(line) if line == "PING" => {
+                    let _ = control_tx.send(ControlEvent::Ping);
+                }
+                Ok(line) if line == "COMPLETE_ACK" => {
+                    let _ = control_tx.send(ControlEvent::CompleteAck);
+                    break;
+                }
+                Ok(line) if line.starts_with("CANCEL ") => {
+                    let reason = line.strip_prefix("CANCEL ").unwrap_or_default().to_owned();
+                    let _ = control_tx.send(ControlEvent::Cancel(reason));
+                    break;
+                }
                 Ok(_) => {
                     let _ = control_tx
                         .send(ControlEvent::Error("unexpected control message".to_owned()));
                     break;
                 }
                 Err(error) => {
-                    let _ = control_tx.send(ControlEvent::Error(error.to_string()));
+                    let _ = control_tx.send(ControlEvent::Error(format!(
+                        "sender control stopped: {error}"
+                    )));
                     break;
                 }
             }
@@ -1039,7 +1180,7 @@ fn receive_udp(
                 if count < HEADER_SIZE {
                     continue;
                 }
-                if packet[0] != 2 {
+                if packet[0] != 3 {
                     continue;
                 }
                 let sequence = u64::from_be_bytes(packet[1..9].try_into()?);
@@ -1114,6 +1255,16 @@ fn receive_udp(
                     ended = true;
                     ended_at.get_or_insert_with(Instant::now);
                 }
+                ControlEvent::Ping => control.send("PONG")?,
+                ControlEvent::CompleteAck => {
+                    return Err("received completion acknowledgement before completion".into());
+                }
+                ControlEvent::Cancel(reason) => {
+                    if checkpoint_dirty {
+                        state.checkpoint(&file)?;
+                    }
+                    return Err(format!("sender cancelled transfer: {reason}").into());
+                }
                 ControlEvent::Error(error) => {
                     if checkpoint_dirty {
                         state.checkpoint(&file)?;
@@ -1139,12 +1290,36 @@ fn receive_udp(
             file.sync_all()?;
             let actual_hash = hex_digest(object_hasher.finalize().as_slice());
             if actual_hash != hello.hash {
-                control.send("ERROR hash-mismatch")?;
+                control.send("CANCEL hash-mismatch")?;
                 state.discard();
                 return Err("received UDP file hash did not match".into());
             }
             state.install(destination)?;
             control.send("COMPLETE")?;
+            let acknowledgement_deadline = Instant::now() + idle_timeout;
+            loop {
+                let remaining = acknowledgement_deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err("timed out waiting for completion acknowledgement".into());
+                }
+                match control_rx.recv_timeout(remaining) {
+                    Ok(ControlEvent::CompleteAck) => break,
+                    Ok(ControlEvent::Ping) => control.send("PONG")?,
+                    Ok(ControlEvent::End) => {}
+                    Ok(ControlEvent::Cancel(reason)) => {
+                        return Err(format!("sender cancelled transfer: {reason}").into());
+                    }
+                    Ok(ControlEvent::Error(error)) => return Err(error.into()),
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        return Err("timed out waiting for completion acknowledgement".into());
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        return Err(
+                            "control reader stopped before completion acknowledgement".into()
+                        );
+                    }
+                }
+            }
             break;
         }
 
@@ -1269,6 +1444,9 @@ fn mature_frontier(
 
 enum ControlEvent {
     End,
+    Ping,
+    CompleteAck,
+    Cancel(String),
     Error(String),
 }
 
@@ -1384,6 +1562,7 @@ mod tests {
         let auth = auth::test_session();
         let mut packet = vec![0_u8; DATAGRAM_SIZE];
         let original = build_packet(&file, 7, &auth, 0, false, &mut packet).unwrap();
+        assert_eq!(packet[0], 3);
         assert_eq!(packet[9], 0);
         assert_eq!(u16::from_be_bytes(packet[10..12].try_into().unwrap()), 7);
         assert_eq!(original, HEADER_SIZE + 7);
@@ -1529,6 +1708,17 @@ mod tests {
         assert_eq!(Pacer::new(12_500_000.0).batch_bytes, 25_000);
         assert_eq!(Pacer::new(1.0).batch_bytes, 1_200);
         assert_eq!(Pacer::new(1_000_000_000.0).batch_bytes, 65_536);
+    }
+
+    #[test]
+    fn idle_timeout_is_bounded_and_defaults_to_thirty_seconds() {
+        assert_eq!(parse_idle_timeout(&[]).unwrap(), Duration::from_secs(30));
+        assert_eq!(
+            parse_idle_timeout(&["--idle-timeout-ms".into(), "500".into()]).unwrap(),
+            Duration::from_millis(500)
+        );
+        assert!(parse_idle_timeout(&["--idle-timeout-ms".into(), "499".into()]).is_err());
+        assert!(parse_idle_timeout(&["--idle-timeout-ms".into(), "3600001".into()]).is_err());
     }
 
     #[test]

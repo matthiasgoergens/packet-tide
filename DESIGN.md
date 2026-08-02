@@ -97,6 +97,12 @@ The sender proposes:
 - initial pacing rate.
 - a missing-hole grace interval derived from the expected feedback round trip.
 
+TSU3 adds authenticated `PING`/`PONG`, `CANCEL`, and `COMPLETE_ACK` control
+messages. Both endpoints impose a configurable control-idle deadline (30 seconds
+by default), so a peer that remains connected but silent cannot retain transfer
+state indefinitely. The sender checks feedback failure throughout the initial
+UDP pass as well as during repair-only operation.
+
 The receiver accepts the session, creates a temporary output file, allocates a
 chunk-receipt bitmap, and tells the sender which UDP address and port to use.
 
@@ -203,6 +209,12 @@ When every bitmap entry is set, the receiver syncs and hashes the temporary file
 If the hash matches, it atomically moves the file into place and sends `COMPLETE`
 over the reliable control connection. The sender acknowledges completion, and
 both sides may then release session state.
+
+The sender answers `COMPLETE` with `COMPLETE_ACK`. The receiver does not report a
+clean session shutdown until that acknowledgement arrives; its wait is bounded by
+the control-idle deadline. If the acknowledgement or connection is lost after
+installation, reconnecting for the same immutable object returns `COMPLETE` again
+and repeats the acknowledgement exchange without retransmitting data.
 
 If verification fails, the receiver must not claim success. Initially it may
 request a complete retry; finer corruption localization can be added later.
