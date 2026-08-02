@@ -69,8 +69,8 @@ endpoints that are only routed from another machine.
 ## Exploratory crossover matrix
 
 `exploratory-v1.json` is a deliberately fractional sweep across 64 KiB–64 MiB
-files, 20–100 ms RTT, and 0–1% random loss. Five complete blocks per cell compare
-UDP with one- and four-stream CUBIC and BBR. Scenario rows are interleaved across
+files, 20–100 ms RTT, and 0–1% random loss. Six complete blocks per cell compare
+fixed-rate and automatic UDP with one- and four-stream CUBIC and BBR. Scenario rows are interleaved across
 time; within each scenario, cyclic randomized treatment orders put every treatment
 in every ordinal position exactly once. All treatments in a block share one
 preregistered netem seed.
@@ -89,8 +89,8 @@ python3 lab/two-host/run-matrix.py \
   --receiver-binary /path/to/packet-tide-aarch64 \
   --key-file /secure/path/benchmark.key \
   --scenario-file lab/two-host/exploratory-v1.json \
-  --study-kind exploratory --blocks 5 \
-  --treatments udp,tcp-cubic,tcp-bbr,tcp4-cubic,tcp4-bbr \
+  --study-kind exploratory --blocks 6 \
+  --treatments udp,udp-auto,tcp-cubic,tcp-bbr,tcp4-cubic,tcp4-bbr \
   --results results/raw/exploratory-tsu4
 
 python3 lab/two-host/evaluate-exploratory.py results/raw/exploratory-tsu4

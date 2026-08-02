@@ -30,6 +30,7 @@ DEFAULT_SCENARIOS = (
 TREATMENTS = ("udp", "tcp", "tcp4")
 SUPPORTED_TREATMENTS = (
     "udp",
+    "udp-auto",
     "tcp",
     "tcp-cubic",
     "tcp-bbr",
@@ -44,7 +45,7 @@ def treatment_transport(treatment: str) -> str:
 
 
 def treatment_cc(treatment: str) -> str | None:
-    return treatment.rsplit("-", 1)[1] if "-" in treatment else None
+    return treatment.rsplit("-", 1)[1] if treatment.startswith("tcp") and "-" in treatment else None
 
 
 def load_scenarios(path: Path | None) -> tuple[dict[str, object], ...]:
@@ -416,7 +417,9 @@ exit 1
     netem_loss = "" if loss == 0 else f" loss random {loss}%"
     seed = network_seed
     sender_rate_mbit = (
-        args.udp_rate_mbit
+        None
+        if treatment == "udp-auto"
+        else args.udp_rate_mbit
         if treatment == "udp" and args.udp_rate_mbit is not None
         else scenario["rate_mbit"]
     )
@@ -430,10 +433,15 @@ exit 1
             f'test "$(sysctl -n net.ipv4.tcp_congestion_control)" = {congestion_control} && '
         )
     )
+    rate_options = (
+        f"--min-rate-mbps {args.auto_min_rate_mbit} --max-rate-mbps {args.auto_max_rate_mbit}"
+        if treatment == "udp-auto"
+        else f"--rate-mbps {sender_rate_mbit}"
+    )
     sender_script = f"""
 nice -n 10 ionice -c2 -n7 {runtime} run --name {quote(sender_name)} --cap-add NET_ADMIN \
   -v {quote(work)}:/work:z {image} sh -lc \
-  {quote(f'iface=$(ip route show default | head -n1 | cut -d " " -f5); test -n "$iface"; ip link set dev "$iface" gso_max_size 1500 gso_ipv4_max_size 1500 gro_max_size 1500 gro_ipv4_max_size 1500; tc qdisc replace dev "$iface" root netem limit 10000 delay {scenario["rtt_ms"]}ms{netem_loss} rate {scenario["rate_mbit"]}mbit seed {seed} && {set_congestion_control}exec /work/packet-tide send --connect {args.receiver_address}:{control_port} --udp-target {args.receiver_address}:{udp_port} --file /work/source-{scenario["file_bytes"]}.bin --transport {program_transport} --rate-mbps {sender_rate_mbit} --repair-cooldown-ms {2 * float(scenario["rtt_ms"]) + 50:.0f} --udp-payload-bytes {args.udp_payload_bytes} --feedback-interval-ms {args.feedback_interval_ms} --key-file /work/auth.key')}
+  {quote(f'iface=$(ip route show default | head -n1 | cut -d " " -f5); test -n "$iface"; ip link set dev "$iface" gso_max_size 1500 gso_ipv4_max_size 1500 gro_max_size 1500 gro_ipv4_max_size 1500; tc qdisc replace dev "$iface" root netem limit 10000 delay {scenario["rtt_ms"]}ms{netem_loss} rate {scenario["rate_mbit"]}mbit seed {seed} && {set_congestion_control}exec /work/packet-tide send --connect {args.receiver_address}:{control_port} --udp-target {args.receiver_address}:{udp_port} --file /work/source-{scenario["file_bytes"]}.bin --transport {program_transport} {rate_options} --repair-cooldown-ms {2 * float(scenario["rtt_ms"]) + 50:.0f} --udp-payload-bytes {args.udp_payload_bytes} --feedback-interval-ms {args.feedback_interval_ms} --key-file /work/auth.key')}
 """
     sent = remote(
         args.sender,
@@ -581,6 +589,9 @@ nice -n 10 ionice -c2 -n7 {runtime} run --name {quote(sender_name)} --cap-add NE
             "tcp_congestion_control_requested": congestion_control,
             "tcp_congestion_control_actual": congestion_control,
             "sender_rate_mbit": sender_rate_mbit,
+            "rate_mode_requested": (
+                "auto" if treatment == "udp-auto" else "fixed" if program_transport == "udp" else None
+            ),
             "netem_seed": seed,
             "design": {
                 "block_id": f"two-host-{scenario['name']}-{block_index}",
@@ -631,6 +642,8 @@ def parse_args() -> argparse.Namespace:
         type=float,
         help="optional UDP offered rate, independent of the emulated bottleneck rate",
     )
+    parser.add_argument("--auto-min-rate-mbit", type=float, default=10.0)
+    parser.add_argument("--auto-max-rate-mbit", type=float, default=10_000.0)
     parser.add_argument("--udp-payload-bytes", type=int, default=1172)
     parser.add_argument("--feedback-interval-ms", type=int, default=50)
     parser.add_argument("--idle-timeout", type=float, default=300.0)
@@ -668,6 +681,11 @@ def main() -> None:
         raise SystemExit("--blocks must be at least 2")
     if args.udp_rate_mbit is not None and args.udp_rate_mbit <= 0:
         raise SystemExit("--udp-rate-mbit must be positive")
+    if (
+        args.auto_min_rate_mbit <= 0
+        or args.auto_max_rate_mbit < args.auto_min_rate_mbit
+    ):
+        raise SystemExit("automatic rate bounds must be positive and ordered")
     if args.idle_consecutive_samples < 1 or args.idle_sample_seconds <= 0:
         raise SystemExit("idle sampling values must be positive")
     if not 256 <= args.udp_payload_bytes <= 1424:
@@ -732,6 +750,7 @@ def main() -> None:
         "treatments": list(args.treatments),
         "randomization_seed": args.seed,
         "udp_sender_rate_mbit": args.udp_rate_mbit,
+        "auto_rate_bounds_mbit": [args.auto_min_rate_mbit, args.auto_max_rate_mbit],
         "udp_payload_bytes": args.udp_payload_bytes,
         "feedback_interval_ms": args.feedback_interval_ms,
         "idle_gate": {
@@ -784,6 +803,7 @@ def main() -> None:
             "treatments",
             "randomization_seed",
             "udp_sender_rate_mbit",
+            "auto_rate_bounds_mbit",
             "udp_payload_bytes",
             "feedback_interval_ms",
             "idle_gate",

@@ -26,7 +26,7 @@ def treatment_transport(treatment: str) -> str:
 
 
 def treatment_cc(treatment: str) -> str | None:
-    return treatment.rsplit("-", 1)[1] if "-" in treatment else None
+    return treatment.rsplit("-", 1)[1] if treatment.startswith("tcp") and "-" in treatment else None
 
 
 def validate_preregistration(value: object) -> tuple[dict, tuple[str, ...], dict[str, dict], dict[str, dict]]:
@@ -245,6 +245,15 @@ def main() -> None:
                 or item.get("tcp_congestion_control_actual") != expected_cc
                 or item.get("netem_seed") != expected["netem_seed"]
             ):
+                design_failures.append(treatment)
+            controller = item.get("rate_controller")
+            if treatment == "udp-auto":
+                if not isinstance(controller, dict) or controller.get("mode") != "auto":
+                    design_failures.append(treatment)
+            elif treatment == "udp":
+                if not isinstance(controller, dict) or controller.get("mode") != "fixed":
+                    design_failures.append(treatment)
+            elif controller is not None:
                 design_failures.append(treatment)
         if design_failures:
             failures.append(f"{block_id}: treatment or design provenance mismatch")
