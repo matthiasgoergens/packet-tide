@@ -1,0 +1,57 @@
+{
+  "transport": "tcp",
+  "bytes": 16777216,
+  "elapsed_ms": 8274.097,
+  "goodput_mbps": 16.221,
+  "datagrams": 0,
+  "repairs": 0,
+  "udp_ip_bytes_offered": 0,
+  "resumed_chunks": 0,
+  "verified": true,
+  "binary_sha256": "7b4fcef9765be58b0b7ab91e3603e88c6d2b0803b1776d95b44bb0aafe2764e7",
+  "endpoint_binary_sha256": {
+    "sender": "7b4fcef9765be58b0b7ab91e3603e88c6d2b0803b1776d95b44bb0aafe2764e7",
+    "receiver": "55f520126ae93610dc976bca91107c8f4bccf9dcc995e02177942ea2990a8e89"
+  },
+  "source_sha256": "080acf35a507ac9849cfcba47dc2ad83e01b75663a516279c8b9d243b719643e",
+  "output_sha256": "080acf35a507ac9849cfcba47dc2ad83e01b75663a516279c8b9d243b719643e",
+  "scenario": {
+    "name": "lossy",
+    "file_bytes": 16777216,
+    "rate_mbit": 100.0,
+    "rtt_ms": 100.0,
+    "loss_percent": 1.0
+  },
+  "sender_rate_mbit": 100.0,
+  "design": {
+    "block_id": "two-host-lossy-13",
+    "block_order": 13,
+    "treatment_order": 1,
+    "randomization_seed": 5101,
+    "expected_treatments": [
+      "udp",
+      "tcp",
+      "tcp4"
+    ],
+    "scenario_block": 1
+  },
+  "hosts": {
+    "sender": {
+      "ssh": "spider",
+      "machine_id_sha256": "11c50d5e10081472a04cd917d7047b1c6ef7c6cab220e2675810cf924c643513",
+      "uname": "Linux 7.1.5-arch1-2.1 x86_64 GNU/Linux",
+      "cpus": "32"
+    },
+    "receiver": {
+      "ssh": "matthias@192.168.66.82",
+      "machine_id_sha256": "798d0e6dbf018efcea57a2d1e4a9171f9367fab22ed306908ba3ea67a4a00ef1",
+      "uname": "Linux 6.18.34+rpt-rpi-v8 aarch64 GNU/Linux",
+      "cpus": "4"
+    }
+  },
+  "isolation": "ephemeral sender container with netem on its private interface; native receiver",
+  "host_load_before_block": {
+    "spider": 0.0290625,
+    "matthias@192.168.66.82": 0.0925
+  }
+}
