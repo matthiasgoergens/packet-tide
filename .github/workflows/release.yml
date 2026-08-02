@@ -51,7 +51,8 @@ jobs:
           bash -n lab/test-rate-control.sh
           bash -n lab/run-one.sh lab/validate-packet-sizes.sh
           python3 -m py_compile lab/capture-packets.py lab/udp-fault-proxy.py
-          python3 -m py_compile lab/two-host/run-matrix.py lab/two-host/evaluate-release.py
+          python3 -m py_compile lab/two-host/run-matrix.py lab/two-host/evaluate-release.py lab/two-host/evaluate-exploratory.py
+          python3 -m json.tool lab/two-host/exploratory-v1.json >/dev/null
 
       - name: Validate tag, source package, and installation
         run: RUSTUP_TOOLCHAIN="$RUST_TOOLCHAIN" release/check-release.sh "$RELEASE_TAG"
